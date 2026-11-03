@@ -4,6 +4,7 @@
 - **Title**: Login dengan username & password yang valid
 - **Type**: Positive
 - **Execution Mode**: deterministic
+- **Approval Status**: approved
 - **Target URL**: ${DEV_BASE_URL}
 - **Account**: ${QA_USERNAME}
 

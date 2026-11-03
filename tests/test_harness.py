@@ -10,6 +10,8 @@ sys.path.insert(0, str(repo_root))
 
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
+from runner.parser import parse_markdown_test_case, validate_test_case_contract
+from runner.engine import run_test_case
 
 class TestQAHarness(unittest.TestCase):
 
@@ -88,6 +90,65 @@ class TestQAHarness(unittest.TestCase):
             })
             self.assertEqual(sample_meta["publish_status"]["google_doc_id"], "existing_doc_id")
             self.assertEqual(sample_meta["verdict"], "BLOCKED")
+
+    def test_markdown_parser_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tc_file = tmppath / "sample_tc.md"
+            tc_file.write_text(
+                "# TC-999: Sample Dynamic Test\n\n"
+                "- **ID**: TC-999\n"
+                "- **Title**: Sample Dynamic Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                "- **Target URL**: https://example.com\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| 1 | navigate | https://example.com | - | Page loaded |\n"
+                "| 2 | click | Submit | - | Form submitted |\n\n"
+                "## Expected Results\n"
+                "- Success indicator displayed\n",
+                encoding="utf-8"
+            )
+
+            parsed = parse_markdown_test_case(tc_file)
+            self.assertEqual(parsed["id"], "TC-999")
+            self.assertEqual(parsed["approval_status"], "approved")
+            self.assertEqual(len(parsed["steps"]), 2)
+            self.assertEqual(parsed["steps"][0]["action"], "navigate")
+
+            # Validation errors should be empty
+            errors = validate_test_case_contract(parsed)
+            self.assertEqual(errors, [])
+
+    def test_approval_gate_blocks_pending_case(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tc_file = tmppath / "unapproved_tc.md"
+            tc_file.write_text(
+                "# TC-000: Unapproved Draft Case\n\n"
+                "- **ID**: TC-000\n"
+                "- **Title**: Unapproved Draft Case\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: pending\n"
+                "- **Target URL**: https://example.com\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| 1 | navigate | https://example.com | - | Page loaded |\n\n"
+                "## Expected Results\n"
+                "- Success\n",
+                encoding="utf-8"
+            )
+
+            # Execution must be BLOCKED immediately by the approval gate
+            res = run_test_case(str(tc_file))
+            self.assertEqual(res["verdict"], "BLOCKED")
+            self.assertIn("Approval Status: pending", res["actual_result"])
+            self.assertIn("disetujui", res["actual_result"])
 
 if __name__ == "__main__":
     unittest.main()

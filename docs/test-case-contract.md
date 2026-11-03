@@ -76,6 +76,7 @@ Semua nama field dan heading wajib menggunakan bahasa Inggris baku, sedangkan ko
 - **Title**: {Deskripsi singkat skenario uji}
 - **Type**: {Positive | Negative | Boundary}
 - **Execution Mode**: {deterministic | ai}   <!-- Default: deterministic -->
+- **Approval Status**: {approved | pending}  <!-- Gate pengaman: runner hanya mengeksekusi status approved -->
 - **Target URL**: ${DEV_BASE_URL}
 - **Account**: ${QA_USERNAME}                <!-- Kredensial rahasia tetap di server env -->
 
@@ -140,3 +141,37 @@ Kolom `Action` wajib menggunakan kata kerja standar berikut:
 
 2. **Inline Kasus Uji Baru**:
    Jika skenario belum di-commit ke Git, tim QA dapat menempelkan blok Markdown mengikuti template di atas langsung di dalam deskripsi kartu Jira. Adapter akan mengekstrak blok tersebut, menyimpan **snapshot kasus uji bersama artefak eksekusi** di `artifacts/<run-id>/test-case-snapshot.md` (tanpa menyertakan nilai rahasia), dan menjalankannya sehingga hasil pengujian tetap dapat diaudit dan direproduksi meskipun kartu Jira mengalami perubahan di kemudian hari.
+
+---
+
+## 6. Alur AI Authoring & QA Approval Gate
+
+Untuk memudahkan tim QA menulis pengujian tanpa harus menyusun tabel langkah secara manual:
+
+```
+[Bahasa Alami QA (Jira / CLI)]
+          │
+          ▼
+[AI Authoring Generator (Hermes)]
+          │  1. Ekstrak entitas & maksud langkah pengujian
+          │  2. Petakan ke kata kerja aksi baku (navigate, fill, click, select, wait)
+          │  3. Tetapkan referensi akun aman (${QA_USERNAME}, bukan password terbuka)
+          │  4. Tulis draft berkas: test-cases/drafts/TC-xxx.md
+          │     dengan status: "Approval Status: pending"
+          │
+          ▼
+[Skema & Ambiguity Validator]
+          │  • Tolak jika langkah ambigu atau kriteria hasil tidak terukur
+          │
+          ▼
+[QA Review & Approval Gate]
+          │  QA meninjau ringkasan langkah & expected results.
+          │  Jika disetujui, status diubah menjadi: "Approval Status: approved"
+          │
+          ▼
+[Runner Execution Gate]
+             Runner Playwright hanya mengeksekusi berkas kasus uji 
+             yang memiliki status: "Approval Status: approved".
+             Setiap perubahan pada langkah membatalkan status ke "pending".
+```
+
