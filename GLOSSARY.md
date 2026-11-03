@@ -27,3 +27,15 @@ _Avoid_: Evidence file, attachment, visual artifact
 **Data Uji Sintetis**:
 Data tiruan yang dibuat khusus untuk pengujian tanpa memuat data medis atau identitas pasien riil.
 _Avoid_: Mock data, dummy data, test fixture
+
+**Permintaan Eksekusi**:
+Perintah penjalanan satu atau lebih Kasus Uji yang dikirimkan oleh sistem eksternal atau operator manusia ke sistem otomasi.
+_Avoid_: Trigger event, webhook payload, job dispatch
+
+**Sumber Kasus Uji**:
+Asal spesifikasi Kasus Uji yang divalidasi, baik berupa berkas repositori terkelola maupun blok skenario terstruktur pada sistem pelacak tiket.
+_Avoid_: Ticket description, test repo, issue source
+
+**Mode Eksekusi**:
+Mekanisme pengoperasian langkah pengujian pada peramban, baik secara deterministik terstruktur maupun dipandu oleh model kecerdasan buatan.
+_Avoid_: Runner strategy, test driver, AI toggle

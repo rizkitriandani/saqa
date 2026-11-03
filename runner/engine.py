@@ -56,6 +56,8 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                     tc_id = line.split("**ID**:", 1)[1].strip()
                 elif "**Judul**:" in line:
                     tc_title = line.split("**Judul**:", 1)[1].strip()
+                elif "**Title**:" in line:
+                    tc_title = line.split("**Title**:", 1)[1].strip()
 
     metadata = {
         "run_id": run_id,
