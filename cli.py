@@ -47,8 +47,9 @@ def cmd_run(args):
 
 def cmd_publish(args):
     run_id = args.run_id
-    print(f"📤 Mencoba publikasi ulang artefak untuk Run ID: {run_id}")
-    pub_result = publish_artifacts(run_id)
+    force = getattr(args, "force", False)
+    print(f"📤 Mencoba publikasi ulang artefak untuk Run ID: {run_id} (force={force})")
+    pub_result = publish_artifacts(run_id, force=force)
     print(json.dumps(pub_result, indent=2))
     return 0 if pub_result.get("published") else 1
 
@@ -87,6 +88,7 @@ def main():
 
     parser_pub = subparsers.add_parser("publish", help="Publikasikan artefak ke Google Drive")
     parser_pub.add_argument("run_id", help="ID Run yang akan dipublikasikan")
+    parser_pub.add_argument("--force", action="store_true", help="Paksa pembaruan dokumen dan pemindahan folder")
     parser_pub.set_defaults(func=cmd_publish)
 
     parser_list = subparsers.add_parser("list", help="Daftar riwayat eksekusi pengujian")

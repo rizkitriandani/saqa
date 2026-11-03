@@ -4,6 +4,38 @@ import docx
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE
+
+def add_hyperlink(paragraph, url: str, text: str, color_rgb: str = "0B57D0", underline: bool = True):
+    """Menambahkan tautan hyperlink native ke dalam paragraf WordprocessingML."""
+    part = paragraph.part
+    r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+
+    new_run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    if color_rgb:
+        c = OxmlElement('w:color')
+        c.set(qn('w:val'), color_rgb)
+        rPr.append(c)
+
+    if underline:
+        u = OxmlElement('w:u')
+        u.set(qn('w:val'), 'single')
+        rPr.append(u)
+
+    new_run.append(rPr)
+    text_elem = OxmlElement('w:t')
+    text_elem.text = text
+    new_run.append(text_elem)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    return hyperlink
 
 def build_docx_report(metadata_path: Path, drive_video_url: str = None) -> Path:
     repo_root = Path(__file__).resolve().parent.parent
@@ -56,7 +88,13 @@ def build_docx_report(metadata_path: Path, drive_video_url: str = None) -> Path:
         row = table.rows[i]
         row.cells[0].text = k
         row.cells[0].paragraphs[0].runs[0].bold = True
-        row.cells[1].text = str(v)
+        
+        if k == "Tautan Bukti Video" and drive_video_url:
+            p_cell = row.cells[1].paragraphs[0]
+            p_cell.text = ""
+            add_hyperlink(p_cell, drive_video_url, "▶ Buka / Putar Rekaman Video di Drive")
+        else:
+            row.cells[1].text = str(v)
 
     # Evaluasi Hasil
     doc.add_heading("2. Hasil Evaluasi & Asersi", level=1)

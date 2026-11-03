@@ -50,9 +50,16 @@ class TestQAHarness(unittest.TestCase):
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(sample_meta, f)
 
-            docx_file = build_docx_report(meta_path)
+            docx_file = build_docx_report(meta_path, drive_video_url="https://drive.google.com/file/d/test12345/view")
             self.assertTrue(docx_file.exists())
             self.assertGreater(docx_file.stat().st_size, 5000)
+
+            # Verifikasi bahwa w:hyperlink ada di dalam XML dokumen
+            import docx as docx_pkg
+            doc_loaded = docx_pkg.Document(docx_file)
+            xml_content = doc_loaded._element.xml
+            self.assertIn("w:hyperlink", xml_content)
+            self.assertIn("Buka / Putar Rekaman Video di Drive", xml_content)
 
     def test_publisher_run_id_path_traversal_guard(self):
         res = publish_artifacts("../evil_path")
