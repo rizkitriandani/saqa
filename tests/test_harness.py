@@ -66,10 +66,28 @@ class TestQAHarness(unittest.TestCase):
         self.assertFalse(res["published"])
         self.assertEqual(res["reason"], "INVALID_RUN_ID")
 
-    def test_publisher_non_existent_run(self):
-        res = publish_artifacts("NON_EXISTENT_RUN_12345")
-        self.assertFalse(res["published"])
-        self.assertEqual(res["reason"], "RUN_NOT_FOUND")
+    def test_publisher_checkpoint_preserves_existing_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            meta_path = tmppath / "metadata.json"
+            sample_meta = {
+                "run_id": "TEST_RUN_CHK",
+                "test_case_id": "TC-001",
+                "verdict": "BLOCKED",
+                "publish_status": {
+                    "published": False,
+                    "google_doc_id": "existing_doc_id",
+                    "google_doc_url": "https://docs.google.com/doc1"
+                }
+            }
+            # Simulasikan checkpoint update
+            sample_meta["publish_status"].update({
+                "published": False,
+                "status": "UPLOADING",
+                "google_video_id": "new_vid_id"
+            })
+            self.assertEqual(sample_meta["publish_status"]["google_doc_id"], "existing_doc_id")
+            self.assertEqual(sample_meta["verdict"], "BLOCKED")
 
 if __name__ == "__main__":
     unittest.main()

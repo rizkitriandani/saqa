@@ -109,6 +109,13 @@ def publish_artifacts(run_id: str, force: bool = False) -> dict:
                 run_folder_id = rf.get("id")
                 run_folder_url = rf.get("webViewLink")
 
+        # Simpan referensi folder segera ke metadata.json
+        meta.setdefault("publish_status", {})
+        meta["publish_status"]["google_folder_id"] = run_folder_id
+        meta["publish_status"]["google_folder_url"] = run_folder_url
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
         video_drive_link = pub_status.get("google_video_url")
         video_file_id = pub_status.get("google_video_id")
 
@@ -161,15 +168,15 @@ def publish_artifacts(run_id: str, force: bool = False) -> dict:
                         supportsAllDrives=True
                     ).execute()
 
-            # Simpan progres video segera ke metadata.json
-            meta["publish_status"] = {
+            # Simpan progres video segera ke metadata.json tanpa menghapus referensi doc yang sudah ada
+            meta["publish_status"].update({
                 "published": False,
                 "status": "UPLOADING",
                 "google_folder_id": run_folder_id,
                 "google_folder_url": run_folder_url,
                 "google_video_id": video_file_id,
                 "google_video_url": video_drive_link
-            }
+            })
             with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
 
