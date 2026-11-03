@@ -1,0 +1,25 @@
+# Secrets & Environment
+.env
+*.env
+credentials/
+*.json
+!package.json
+!tsconfig.json
+
+# Test Artifacts & Media
+artifacts/
+test-results/
+videos/
+screenshots/
+*.webm
+*.mp4
+*.zip
+*.docx
+
+# Python & Node
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+dist/
+build/
