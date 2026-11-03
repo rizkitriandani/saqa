@@ -2,7 +2,15 @@
 
 *Tanggal: 2026-11-03*  
 *Workspace: `/root/dev/sangQA`*  
-*Status: Spesifikasi Standar Disetujui*
+*Status: Spesifikasi Standar Disetujui (Status Implementasi: Kontrak Disepakati, Parser Langkah Dinamis & Adapter Jira Belum Dibangun)*
+
+---
+
+## 0. Status Kesiapan Implementasi Saat Ini
+
+- **Kontrak Spesifikasi**: Disepakati dan menjadi rujukan baku penulisan kasus uji tim QA.
+- **Engine Saat Ini (`runner/engine.py`)**: Mengeksekusi alur login valid BCA Life secara terverifikasi. Parser Markdown saat ini membaca metadata `ID` dan `Title`. Parser langkah dinamis dari tabel Markdown, adapter webhook Jira, serta integrasi orkestrator Hermes/Vision berstatus **tahap pengembangan berikutnya**.
+- **Karakteristik Asersi**: Teks narasi bebas pada `Expected Results` tidak otomatis menjadi kode asersi peramban; adapter dan runner wajib memvalidasi target elemen secara ketat dan menolak instruksi yang ambigu. Pendekatan deterministik meminimalkan ketidakpastian tetapi tetap memerlukan penanganan latensi jaringan peramban.
 
 ---
 
@@ -131,4 +139,4 @@ Kolom `Action` wajib menggunakan kata kerja standar berikut:
    Adapter akan memuat file `test-cases/TC-001-*.md` dan `test-cases/TC-002-*.md` dari repositori.
 
 2. **Inline Kasus Uji Baru**:
-   Jika skenario belum di-commit ke Git, tim QA dapat menempelkan blok Markdown mengikuti template di atas langsung di dalam deskripsi kartu Jira. Adapter akan mengekstrak blok tersebut, membuat snapshot sementara di memori eksekusi, dan menjalankannya tanpa perlu merilis PR kode terlebih dahulu.
+   Jika skenario belum di-commit ke Git, tim QA dapat menempelkan blok Markdown mengikuti template di atas langsung di dalam deskripsi kartu Jira. Adapter akan mengekstrak blok tersebut, menyimpan **snapshot kasus uji bersama artefak eksekusi** di `artifacts/<run-id>/test-case-snapshot.md` (tanpa menyertakan nilai rahasia), dan menjalankannya sehingga hasil pengujian tetap dapat diaudit dan direproduksi meskipun kartu Jira mengalami perubahan di kemudian hari.
