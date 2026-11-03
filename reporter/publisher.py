@@ -4,7 +4,29 @@ from pathlib import Path
 
 def publish_artifacts(run_id: str) -> dict:
     repo_root = Path(__file__).resolve().parent.parent
-    run_dir = repo_root / "artifacts" / run_id
+    
+    # Load env if needed
+    env_file = repo_root / ".env"
+    if env_file.exists():
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+
+    # Security: Sanitasi run_id agar terbebas dari path traversal
+    safe_run_id = Path(run_id).name
+    if not safe_run_id or safe_run_id != run_id or ".." in run_id:
+        return {
+            "published": False,
+            "reason": "INVALID_RUN_ID",
+            "message": "Parameter run_id tidak valid."
+        }
+
+    run_dir = repo_root / "artifacts" / safe_run_id
     metadata_path = run_dir / "metadata.json"
 
     if not metadata_path.exists():
@@ -25,18 +47,22 @@ def publish_artifacts(run_id: str) -> dict:
     folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
 
     if not folder_id or not cred_path.exists():
-        return {
+        status_info = {
             "published": False,
             "status": "UNPUBLISHED",
             "reason": "AWAITING_GOOGLE_DRIVE_CREDENTIALS",
             "message": (
                 "File kredensial Google Service Account atau GOOGLE_DRIVE_FOLDER_ID belum disetel di .env.\n"
-                f"Laporan lokal aman tersimpan di: {docx_path.relative_to(repo_root)}\n"
+                f"Laporan lokal aman tersimpan di: {docx_path.relative_to(repo_root) if docx_path.exists() else 'Belum dibuat'}\n"
                 f"Video rekaman tersimpan di: {video_path.relative_to(repo_root) if video_path.exists() else 'None'}"
             ),
-            "local_docx": str(docx_path),
+            "local_docx": str(docx_path) if docx_path.exists() else None,
             "local_video": str(video_path) if video_path.exists() else None
         }
+        meta["publish_status"] = status_info
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        return status_info
 
     try:
         from google.oauth2 import service_account

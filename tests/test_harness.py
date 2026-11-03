@@ -18,11 +18,9 @@ class TestQAHarness(unittest.TestCase):
             tmppath = Path(tmpdir)
             meta_path = tmppath / "metadata.json"
             
-            # Buat dummy PNG 1x1
             sc_dir = tmppath / "screenshots"
             sc_dir.mkdir(parents=True)
             dummy_png = sc_dir / "step1.png"
-            # 1x1 transparent png bytes
             png_bytes = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
             dummy_png.write_bytes(png_bytes)
 
@@ -56,10 +54,13 @@ class TestQAHarness(unittest.TestCase):
             self.assertTrue(docx_file.exists())
             self.assertGreater(docx_file.stat().st_size, 5000)
 
-    def test_publisher_separation_of_concerns(self):
-        # Saat kredensial Google belum disetel, publisher harus mengembalikan UNPUBLISHED
-        # dan TIDAK boleh melempar exception atau merusak verdict
-        res = publish_artifacts("NON_EXISTENT_RUN")
+    def test_publisher_run_id_path_traversal_guard(self):
+        res = publish_artifacts("../evil_path")
+        self.assertFalse(res["published"])
+        self.assertEqual(res["reason"], "INVALID_RUN_ID")
+
+    def test_publisher_non_existent_run(self):
+        res = publish_artifacts("NON_EXISTENT_RUN_12345")
         self.assertFalse(res["published"])
         self.assertEqual(res["reason"], "RUN_NOT_FOUND")
 

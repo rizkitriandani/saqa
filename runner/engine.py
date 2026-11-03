@@ -41,15 +41,37 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
     screenshots_dir = run_dir / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load test case info from markdown if available
+    tc_path = repo_root / test_case_file if not os.path.isabs(test_case_file) else Path(test_case_file)
+    tc_id = "TC-001"
+    tc_title = "Login dengan username & password yang valid"
+    if tc_path.exists():
+        with open(tc_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("# "):
+                    parts = line.strip("# \n").split(":", 1)
+                    if len(parts) == 2:
+                        tc_id = parts[0].strip()
+                        tc_title = parts[1].strip()
+                elif "**ID**:" in line:
+                    tc_id = line.split("**ID**:", 1)[1].strip()
+                elif "**Judul**:" in line:
+                    tc_title = line.split("**Judul**:", 1)[1].strip()
+
     metadata = {
         "run_id": run_id,
-        "test_case_id": "TC-001",
-        "title": "Login dengan username & password yang valid",
+        "test_case_id": tc_id,
+        "title": tc_title,
         "timestamp": datetime.now().isoformat(),
         "target_url": dev_base_url,
         "steps": [],
         "verdict": "ERROR",
         "error_message": None,
+        "publish_status": {
+            "published": False,
+            "status": "UNPUBLISHED",
+            "reason": "AWAITING_PUBLISH"
+        },
         "artifacts": {
             "screenshots": [],
             "video": None
@@ -119,14 +141,16 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
             # Step 4: Asersi Keberhasilan Login
             is_login_page = "/login" in current_url
             has_managed_care = "Managed Care" in body_text or "managed-care" in current_url.lower() or "Managed Care" in page_title
-            has_dashboard = "dashboard" in current_url.lower() or "Dashboard" in body_text
 
             alert_el = page.query_selector(".alert, [role='alert']")
             alert_text = alert_el.inner_text().strip() if alert_el else None
 
-            if not is_login_page and (has_managed_care or has_dashboard):
+            if not is_login_page and has_managed_care:
                 metadata["verdict"] = "PASSED"
-                metadata["actual_result"] = f"Pengguna berhasil login dan dialihkan ke {current_url}. Terverifikasi indikator Managed Care / Dashboard."
+                metadata["actual_result"] = f"Pengguna berhasil login dan dialihkan ke {current_url}. Terverifikasi indikator Managed Care."
+            elif alert_text and ("locked" in alert_text.lower() or "blocked" in alert_text.lower() or "terkunci" in alert_text.lower()):
+                metadata["verdict"] = "BLOCKED"
+                metadata["actual_result"] = f"Pengujian terhenti karena prasyarat eksternal gagal. Akun uji terkunci pada halaman login: '{alert_text}'."
             else:
                 metadata["verdict"] = "FAILED"
                 detail = f" Pesan sistem pada halaman: '{alert_text}'." if alert_text else ""
