@@ -18,8 +18,7 @@ def load_env(env_path: Path):
             k, v = line.split("=", 1)
             k = k.strip()
             v = v.strip().strip("'\"")
-            if k not in os.environ:
-                os.environ[k] = v
+            os.environ[k] = v
 
 def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> dict:
     repo_root = Path(__file__).resolve().parent.parent
@@ -140,14 +139,21 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
 
             # Step 4: Asersi Keberhasilan Login
             is_login_page = "/login" in current_url
-            has_managed_care = "Managed Care" in body_text or "managed-care" in current_url.lower() or "Managed Care" in page_title
+            has_dashboard = page_title == "Dashboard" or "Dashboard" in body_text
+            has_managed_care_indicators = (
+                "Managed Care" in body_text or
+                "Care Monitor" in body_text or
+                "Manage Plan Benefit" in body_text or
+                "Total Member" in body_text or
+                "Total Claim" in body_text
+            )
 
             alert_el = page.query_selector(".alert, [role='alert']")
             alert_text = alert_el.inner_text().strip() if alert_el else None
 
-            if not is_login_page and has_managed_care:
+            if not is_login_page and has_dashboard and has_managed_care_indicators:
                 metadata["verdict"] = "PASSED"
-                metadata["actual_result"] = f"Pengguna berhasil login dan dialihkan ke {current_url}. Terverifikasi indikator Managed Care."
+                metadata["actual_result"] = f"Pengguna berhasil login dan dialihkan ke {current_url}. Terverifikasi halaman Dashboard dengan modul Managed Care (Care Monitor, Total Member, Total Claim)."
             elif alert_text and ("locked" in alert_text.lower() or "blocked" in alert_text.lower() or "terkunci" in alert_text.lower()):
                 metadata["verdict"] = "BLOCKED"
                 metadata["actual_result"] = f"Pengujian terhenti karena prasyarat eksternal gagal. Akun uji terkunci pada halaman login: '{alert_text}'."

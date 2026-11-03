@@ -14,6 +14,7 @@ from reporter.publisher import publish_artifacts
 
 def cmd_run(args):
     test_case_file = args.test_case or "test-cases/TC-001-login-valid.md"
+    no_publish = getattr(args, "no_publish", False)
     print(f"\n🚀 [Hermes QA Runner] Memulai eksekusi Kasus Uji: {test_case_file}")
     
     meta = run_test_case(test_case_file)
@@ -26,11 +27,15 @@ def cmd_run(args):
     print(f"   • Durasi: {meta.get('execution_duration_seconds')} detik")
     print(f"   • Keterangan: {meta.get('actual_result', meta.get('error_message'))}")
 
-    # Build DOCX Laporan
+    # Build DOCX Laporan lokal
     run_dir = repo_root / "artifacts" / run_id
     meta_path = run_dir / "metadata.json"
     docx_path = build_docx_report(meta_path)
     print(f"📄 Laporan DOCX berhasil dikompilasi: {docx_path.relative_to(repo_root)}")
+
+    if no_publish:
+        print(f"ℹ️  Publikasi otomatis dilewati (--no-publish). Jalankan 'python3 cli.py publish {run_id}' untuk publikasi.")
+        return 0 if verdict == "PASSED" else 1
 
     # Attempt Google Drive / Docs Publish
     pub_result = publish_artifacts(run_id)
@@ -84,6 +89,7 @@ def main():
 
     parser_run = subparsers.add_parser("run", help="Jalankan Kasus Uji")
     parser_run.add_argument("test_case", nargs="?", default="test-cases/TC-001-login-valid.md", help="Path file kasus uji markdown")
+    parser_run.add_argument("--no-publish", action="store_true", help="Jangan otomatis unggah ke Google Drive/Docs")
     parser_run.set_defaults(func=cmd_run)
 
     parser_pub = subparsers.add_parser("publish", help="Publikasikan artefak ke Google Drive")
