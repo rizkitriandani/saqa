@@ -109,7 +109,7 @@ class TestQAHarness(unittest.TestCase):
                 "| 1 | navigate | https://example.com | - | Page loaded |\n"
                 "| 2 | click | Submit | - | Form submitted |\n\n"
                 "## Expected Results\n"
-                "- Success indicator displayed\n",
+                "- text contains \"Success indicator displayed\"\n",
                 encoding="utf-8"
             )
 

@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import time
@@ -7,7 +8,13 @@ from pathlib import Path
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-from runner.parser import parse_markdown_test_case, validate_test_case_contract
+from runner.parser import (
+    parse_markdown_test_case,
+    validate_test_case_contract,
+    compute_canonical_content_hash,
+    compile_expected_results,
+    ALLOWED_ENV_VARS
+)
 
 def load_env(env_path: Path) -> dict:
     env_dict = {}
@@ -16,21 +23,52 @@ def load_env(env_path: Path) -> dict:
     with open(env_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#") or "=" in line:
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip("'\"")
-                    os.environ[k] = v
-                    env_dict[k] = v
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip("'\"")
+            # Hanya isi jika belum ada di environment sistem
+            if k not in os.environ:
+                os.environ[k] = v
+            env_dict[k] = os.environ[k]
     return env_dict
 
 def resolve_variables(text: str, env_vars: dict) -> str:
     if not text:
         return ""
-    for k, v in env_vars.items():
-        text = text.replace(f"${{{k}}}", str(v))
+    matches = re.findall(r'\$\{([^}]+)\}', text)
+    for var_name in matches:
+        if var_name not in ALLOWED_ENV_VARS:
+            raise ValueError(
+                f"Variabel '${{{var_name}}}' tidak diizinkan. "
+                f"Hanya variabel terdaftar yang boleh digunakan: {sorted(list(ALLOWED_ENV_VARS))}"
+            )
+        val = env_vars.get(var_name, os.environ.get(var_name, ""))
+        text = text.replace(f"${{{var_name}}}", str(val))
     return text
+
+def find_unique_element(page, candidates: list, target_desc: str):
+    """Mencari elemen interaktif dengan verifikasi keunikan (menolak penargetan ambigu)."""
+    matching_locators = []
+    for loc in candidates:
+        cnt = loc.count()
+        if cnt == 1:
+            matching_locators.append(loc)
+        elif cnt > 1:
+            # Saring yang visible
+            vis = [loc.nth(i) for i in range(cnt) if loc.nth(i).is_visible()]
+            if len(vis) == 1:
+                matching_locators.append(vis[0])
+            elif len(vis) > 1:
+                raise ValueError(
+                    f"Penargetan ambigu: ditemukan {len(vis)} elemen aktif untuk target '{target_desc}'. "
+                    "Perjelas selector atau label elemen."
+                )
+
+    if not matching_locators:
+        return None
+    return matching_locators[0]
 
 def execute_step_action(page, step: dict, env_vars: dict):
     action = step["action"].lower()
@@ -43,46 +81,38 @@ def execute_step_action(page, step: dict, env_vars: dict):
     if action == "navigate":
         page.goto(target, timeout=30000, wait_until="networkidle")
     elif action == "fill":
-        filled = False
         candidates = [
             page.get_by_label(target, exact=False),
             page.get_by_placeholder(target, exact=False),
             page.locator(f"input[name='{target}'], textarea[name='{target}']"),
             page.locator(f"#{target}"),
-            page.locator(f"input[id*='{target.lower()}']"),
         ]
-        # Specific fallback for username/password fields if target is generic
         if "username" in target.lower():
-            candidates.append(page.locator("input[type='text'], input[id*='user'], input[name*='user']"))
+            candidates.append(page.locator("input[id*='user'], input[name*='user']"))
         elif "password" in target.lower():
-            candidates.append(page.locator("input[type='password'], input[id*='pass'], input[name*='pass']"))
+            candidates.append(page.locator("input[type='password'], input[id*='pass']"))
 
-        for loc in candidates:
-            if loc.count() > 0:
-                loc.first.fill(val)
-                filled = True
-                break
-        if not filled:
+        el = find_unique_element(page, candidates, target)
+        if not el:
             raise ValueError(f"Elemen input untuk target '{target}' tidak ditemukan di halaman.")
+        el.fill(val)
+
     elif action == "click":
-        clicked = False
         candidates = [
+            page.get_by_role("button", name=target, exact=True),
             page.get_by_role("button", name=target, exact=False),
-            page.get_by_text(target, exact=False),
             page.locator(f"button:has-text('{target}'), a:has-text('{target}')"),
             page.locator(f"#{target}"),
         ]
         if any(term in target.lower() for term in ["sign in", "login", "masuk", "submit"]):
-            candidates.append(page.locator("button[type='submit'], input[type='submit']"))
+            candidates.append(page.locator("button[type='submit']"))
 
-        for loc in candidates:
-            if loc.count() > 0:
-                loc.first.click()
-                clicked = True
-                break
-        if not clicked:
+        el = find_unique_element(page, candidates, target)
+        if not el:
             raise ValueError(f"Elemen tombol untuk target '{target}' tidak ditemukan untuk diklik.")
+        el.click()
         page.wait_for_load_state("networkidle", timeout=30000)
+
     elif action == "select":
         page.select_option(target, label=val)
     elif action == "wait":
@@ -110,16 +140,21 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
     screenshots_dir = run_dir / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    # Persist snapshot of test case with run artifacts (without secrets)
     snapshot_path = run_dir / "test-case-snapshot.md"
     shutil.copyfile(str(tc_path), str(snapshot_path))
+
+    target_url_resolved = ""
+    try:
+        target_url_resolved = resolve_variables(parsed_tc.get("target_url", ""), env_vars)
+    except Exception:
+        target_url_resolved = parsed_tc.get("target_url", "")
 
     metadata = {
         "run_id": run_id,
         "test_case_id": parsed_tc["id"],
         "title": parsed_tc["title"],
         "timestamp": datetime.now().isoformat(),
-        "target_url": resolve_variables(parsed_tc.get("target_url", ""), env_vars),
+        "target_url": target_url_resolved,
         "steps": [],
         "verdict": "ERROR",
         "error_message": None,
@@ -135,28 +170,42 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
         }
     }
 
-    # 1. QA Approval Gate Check
+    # 1. Approval Gate Check (Status + Hash Binding)
     approval_status = parsed_tc.get("approval_status", "pending").lower()
+    approval_hash = parsed_tc.get("approval_hash")
+    canonical_hash = compute_canonical_content_hash(parsed_tc.get("raw_content", ""))
+
     if approval_status != "approved":
         metadata["verdict"] = "BLOCKED"
         metadata["actual_result"] = (
             f"Eksekusi dibatalkan: Kasus uji berstatus 'Approval Status: {approval_status}'. "
             "Kasus uji wajib di-review dan disetujui (status: 'approved') oleh tim QA sebelum dapat dieksekusi."
         )
-        meta_file = run_dir / "metadata.json"
-        with open(meta_file, "w", encoding="utf-8") as f:
+        with open(run_dir / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
         return metadata
 
-    # 2. Contract Schema Validation
+    if not approval_hash or approval_hash != canonical_hash:
+        metadata["verdict"] = "BLOCKED"
+        metadata["actual_result"] = (
+            "Eksekusi dibatalkan: Approval Hash tidak cocok atau kasus uji telah dimodifikasi setelah disetujui. "
+            "Jalankan 'python3 cli.py approve <path>' untuk menyetujui ulang."
+        )
+        with open(run_dir / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        return metadata
+
+    # 2. Strict Contract Schema Validation (Fail-Closed)
     validation_errors = validate_test_case_contract(parsed_tc)
     if validation_errors:
         metadata["verdict"] = "ERROR"
         metadata["error_message"] = f"Validasi kontrak kasus uji gagal: {'; '.join(validation_errors)}"
-        meta_file = run_dir / "metadata.json"
-        with open(meta_file, "w", encoding="utf-8") as f:
+        with open(run_dir / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
         return metadata
+
+    # Compile expected results
+    compiled_assertions, _ = compile_expected_results(parsed_tc.get("expected_results", []))
 
     start_time = time.time()
 
@@ -178,9 +227,8 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                 outcome = s.get("expected_step_outcome", "")
 
                 execute_step_action(page, s, env_vars)
-                time.sleep(0.5) # Stabilisasi render
+                time.sleep(0.5)
 
-                # Capture step screenshot
                 sc_name = f"step_{step_num}_{action}.png"
                 sc_path = screenshots_dir / sc_name
                 page.screenshot(path=str(sc_path))
@@ -195,13 +243,15 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                 metadata["steps"].append(step_info)
                 metadata["artifacts"]["screenshots"].append(str(sc_path))
 
-            # 4. Asersi Hasil & Evaluasi Expected Results
-            time.sleep(2) # Stabilisasi setelah langkah terakhir
+            # 4. Asersi Hasil Berdasarkan Aturan Terkompilasi
+            time.sleep(2)
             current_url = page.url
             body_text = page.inner_text("body")
             page_title = page.title()
+            headings_text = " ".join([
+                h.inner_text() for h in page.query_selector_all("h1, h2, h3, h4, [role='heading'], .page-title")
+            ])
 
-            # Final state screenshot
             sc_final = screenshots_dir / "final_state.png"
             page.screenshot(path=str(sc_final))
             metadata["artifacts"]["screenshots"].append(str(sc_final))
@@ -214,24 +264,45 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                 metadata["verdict"] = "BLOCKED"
                 metadata["actual_result"] = f"Pengujian terhenti karena prasyarat eksternal gagal. Akun uji terkunci pada halaman: '{alert_text}'."
             else:
-                # Periksa kondisi expected results
-                # Contoh: dashboard terautentikasi dan tidak berada di /login
-                is_login = "/login" in current_url
-                has_dashboard = page_title == "Dashboard" or "Dashboard" in body_text
-                has_indicators = any(ind in body_text for ind in [
-                    "Care Monitor", "Manage Plan Benefit", "Total Member", "Total Claim", "Super User"
-                ])
+                # Evaluasi seluruh asersi generik
+                failed_assertions = []
+                for rule in compiled_assertions:
+                    rtype = rule["type"]
+                    val = rule["val"]
+                    raw = rule["raw"]
 
-                if not is_login and has_dashboard and has_indicators:
+                    if rtype == "url_not_contains":
+                        if val in current_url:
+                            failed_assertions.append(f"URL memuat '{val}' (aturan: '{raw}')")
+                    elif rtype == "url_contains":
+                        if val not in current_url:
+                            failed_assertions.append(f"URL tidak memuat '{val}' (aturan: '{raw}')")
+                    elif rtype == "url_equals":
+                        if current_url != val:
+                            failed_assertions.append(f"URL '{current_url}' != '{val}' (aturan: '{raw}')")
+                    elif rtype == "heading_contains":
+                        if val.lower() not in headings_text.lower() and val.lower() not in page_title.lower():
+                            failed_assertions.append(f"Judul/heading tidak memuat '{val}' (aturan: '{raw}')")
+                    elif rtype == "text_contains":
+                        if val not in body_text:
+                            failed_assertions.append(f"Teks '{val}' tidak ditemukan di halaman (aturan: '{raw}')")
+                    elif rtype == "element_visible":
+                        loc = page.locator(val)
+                        if loc.count() == 0 or not loc.first.is_visible():
+                            failed_assertions.append(f"Elemen '{val}' tidak tampil (aturan: '{raw}')")
+
+                if not failed_assertions:
                     metadata["verdict"] = "PASSED"
                     metadata["actual_result"] = (
-                        f"Pengguna berhasil dialihkan ke {current_url}. "
-                        "Terverifikasi judul 'Dashboard' dan indikator modul Managed Care (Care Monitor, Total Member, Total Claim)."
+                        f"Semua {len(compiled_assertions)} kriteria asersi berhasil divalidasi. "
+                        f"URL akhir: {current_url}."
                     )
                 else:
                     metadata["verdict"] = "FAILED"
-                    err_hint = f" Pesan sistem: '{alert_text}'." if alert_text else ""
-                    metadata["actual_result"] = f"Kriteria hasil tidak terpenuhi. URL akhir: {current_url}.{err_hint}"
+                    metadata["actual_result"] = (
+                        f"Kriteria hasil tidak terpenuhi ({len(failed_assertions)}/{len(compiled_assertions)} gagal): "
+                        f"{'; '.join(failed_assertions)}. URL akhir: {current_url}."
+                    )
 
         except Exception as e:
             metadata["verdict"] = "ERROR"
@@ -248,7 +319,6 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
 
     metadata["execution_duration_seconds"] = round(time.time() - start_time, 2)
 
-    # Finalisasi rekaman video
     video_files = list(video_dir.glob("*.webm"))
     if video_files:
         final_video_path = run_dir / "evidence.webm"

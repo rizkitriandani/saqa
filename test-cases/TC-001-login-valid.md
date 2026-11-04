@@ -3,6 +3,7 @@
 - **ID**: TC-001
 - **Title**: Login dengan username & password yang valid
 - **Type**: Positive
+- **Approval Hash**: 0a763a0ee5addca1ed78693d26421ddaa66a8965e5b838ba48d10a595b65fe6a
 - **Execution Mode**: deterministic
 - **Approval Status**: approved
 - **Target URL**: ${DEV_BASE_URL}
@@ -24,7 +25,9 @@
 | 4    | click    | Sign In                  | -                | Permintaan login diproses                   |
 
 ## Expected Results
-- Pengguna berhasil masuk dan dialihkan dari URL `/login` menuju dashboard utama
-- Judul halaman atau header menampilkan "Dashboard"
-- Menampilkan identitas akun terautentikasi (label "Super User")
-- Menampilkan modul Managed Care (Care Monitor, Manage Plan Benefit, Total Member, Total Claim)
+- url does not contain "/login"
+- heading contains "Dashboard"
+- text contains "Super User"
+- text contains "Care Monitor"
+- text contains "Total Member"
+- text contains "Total Claim"

@@ -1,5 +1,90 @@
+import re
+import hashlib
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+
+# Security: Hanya environment variables terdaftar yang boleh disubstitusi ke langkah peramban
+ALLOWED_ENV_VARS = {"DEV_BASE_URL", "QA_USERNAME", "QA_PASSWORD"}
+
+def compute_canonical_content_hash(content: str) -> str:
+    """
+    Menghitung SHA-256 hash dari konten kanonikal kasus uji.
+    Baris metadata 'Approval Status' dan 'Approval Hash' dikecualikan dari kalkulasi
+    sehingga penandatanganan tidak mengubah hash konten yang diaudit.
+    """
+    canonical_lines = []
+    for line in content.splitlines():
+        trimmed = line.strip()
+        if trimmed.startswith("- **Approval Status**:") or trimmed.startswith("- **Approval Hash**:"):
+            continue
+        canonical_lines.append(line.rstrip())
+
+    # Gabungkan dengan newline konsisten
+    canonical_text = "\n".join(canonical_lines).strip()
+    return hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+
+def compile_expected_results(expected_results: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Menerjemahkan kriteria hasil Expected Results menjadi aturan asersi terstruktur yang dapat dievaluasi mesin.
+    Prinsip Fail-Closed: Jika ada aturan narasi yang tidak dapat dipetakan secara terukur,
+    aturan tersebut dikembalikan dalam unparseable_rules agar eksekusi dibatalkan sebelum browser berjalan.
+    """
+    compiled_rules: List[Dict[str, Any]] = []
+    unparseable_rules: List[str] = []
+
+    for raw in expected_results:
+        clean = raw.strip().strip("- *")
+        if not clean:
+            continue
+
+        matched = False
+
+        # 1. URL not contains
+        m = re.search(r'url\s+(?:does\s+not\s+contain|not\s+contains?)\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "url_not_contains", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        # 2. URL contains
+        m = re.search(r'url\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "url_contains", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        # 3. URL equals
+        m = re.search(r'url\s+equals?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "url_equals", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        # 4. Heading contains
+        m = re.search(r'heading\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "heading_contains", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        # 5. Text / Page contains
+        m = re.search(r'(?:text|page|body)\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "text_contains", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        # 6. Element is visible
+        m = re.search(r'element\s+["\']?([^"\']+)["\']?\s+is\s+visible', clean, re.IGNORECASE)
+        if m:
+            compiled_rules.append({"type": "element_visible", "val": m.group(1).strip(), "raw": clean})
+            matched = True
+            continue
+
+        if not matched:
+            unparseable_rules.append(clean)
+
+    return compiled_rules, unparseable_rules
 
 def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
     """Menguraikan file Markdown kasus uji sesuai kontrak standar di docs/test-case-contract.md."""
@@ -13,12 +98,14 @@ def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
         "type": "Positive",
         "execution_mode": "deterministic",
         "approval_status": "pending",
+        "approval_hash": None,
         "target_url": "",
         "account": "",
         "preconditions": [],
         "test_data": {},
         "steps": [],
-        "expected_results": []
+        "expected_results": [],
+        "raw_content": content
     }
 
     # 1. Parse Metadata Header
@@ -39,6 +126,8 @@ def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
             parsed["execution_mode"] = line_s.split(":", 1)[1].strip().strip("* ").split()[0].lower()
         elif "**Approval Status**:" in line_s:
             parsed["approval_status"] = line_s.split(":", 1)[1].strip().strip("* ").split()[0].lower()
+        elif "**Approval Hash**:" in line_s:
+            parsed["approval_hash"] = line_s.split(":", 1)[1].strip().strip("* ").split()[0].lower()
         elif "**Target URL**:" in line_s:
             parsed["target_url"] = line_s.split(":", 1)[1].strip().strip("* ")
         elif "**Account**:" in line_s or "**Akun Uji**:" in line_s:
@@ -93,21 +182,44 @@ def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
     return parsed
 
 def validate_test_case_contract(tc: Dict[str, Any]) -> List[str]:
-    """Memvalidasi integritas kasus uji terhadap kontrak baku."""
+    """Memvalidasi integritas kasus uji terhadap kontrak baku dengan aturan fail-closed."""
     errors = []
     if not tc.get("id") or tc.get("id") == "UNKNOWN":
         errors.append("Field 'ID' wajib diisi.")
     if not tc.get("title") or tc.get("title") == "Unknown Test Case":
         errors.append("Field 'Title' wajib diisi.")
-    if not tc.get("steps"):
+
+    # 1. Fail-closed on unsupported execution mode
+    mode = tc.get("execution_mode", "deterministic").lower()
+    if mode != "deterministic":
+        errors.append(f"Mode eksekusi '{mode}' belum didukung pada rilis ini. Gunakan 'deterministic'.")
+
+    # 2. Steps validation
+    steps = tc.get("steps", [])
+    if not steps:
         errors.append("Tabel 'Test Steps' kosong atau format kolom tidak sesuai.")
-    if not tc.get("expected_results"):
+    else:
+        valid_actions = {"navigate", "fill", "click", "select", "wait", "assert"}
+        for idx, s in enumerate(steps):
+            expected_step_num = str(idx + 1)
+            actual_step_num = str(s.get("step_number", "")).strip()
+            if actual_step_num != expected_step_num:
+                errors.append(f"Nomor langkah tidak berurutan: diharapkan '{expected_step_num}', ditemukan '{actual_step_num}'.")
+
+            act = s.get("action", "").lower()
+            if act not in valid_actions:
+                errors.append(f"Aksi '{act}' pada langkah {actual_step_num} tidak didukung. Pilihan valid: {sorted(list(valid_actions))}")
+
+    # 3. Expected Results validation & compilation
+    raw_expectations = tc.get("expected_results", [])
+    if not raw_expectations:
         errors.append("Bagian 'Expected Results' wajib mendefinisikan minimal satu kriteria hasil.")
-    
-    valid_actions = {"navigate", "fill", "click", "select", "wait", "assert"}
-    for s in tc.get("steps", []):
-        act = s.get("action", "").lower()
-        if act not in valid_actions:
-            errors.append(f"Aksi '{act}' pada langkah {s.get('step_number')} tidak didukung. Pilihan valid: {sorted(list(valid_actions))}")
+    else:
+        _, unparseable = compile_expected_results(raw_expectations)
+        if unparseable:
+            errors.append(
+                f"Kriteria hasil tidak dapat dikompilasi ke asersi mesin: {unparseable}. "
+                "Gunakan format baku seperti: url contains \"...\", text contains \"...\", element \"...\" is visible."
+            )
 
     return errors

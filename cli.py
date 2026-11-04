@@ -9,8 +9,61 @@ repo_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(repo_root))
 
 from runner.engine import run_test_case
+from runner.parser import compute_canonical_content_hash, parse_markdown_test_case, validate_test_case_contract
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
+
+def cmd_approve(args):
+    tc_path = repo_root / args.test_case if not os.path.isabs(args.test_case) else Path(args.test_case)
+    if not tc_path.exists():
+        print(f"❌ File kasus uji tidak ditemukan: {tc_path}")
+        return 1
+
+    content = tc_path.read_text(encoding="utf-8")
+    parsed = parse_markdown_test_case(tc_path)
+    errors = validate_test_case_contract(parsed)
+    if errors:
+        print(f"❌ Tidak dapat menyetujui kasus uji. Validasi kontrak gagal:")
+        for e in errors:
+            print(f"   • {e}")
+        return 1
+
+    canonical_hash = compute_canonical_content_hash(content)
+
+    lines = content.splitlines()
+    new_lines = []
+    status_updated = False
+    hash_updated = False
+
+    for line in lines:
+        if line.strip().startswith("- **Approval Status**:"):
+            new_lines.append("- **Approval Status**: approved")
+            status_updated = True
+        elif line.strip().startswith("- **Approval Hash**:"):
+            new_lines.append(f"- **Approval Hash**: {canonical_hash}")
+            hash_updated = True
+        else:
+            new_lines.append(line)
+
+    if not status_updated or not hash_updated:
+        final_lines = []
+        for line in new_lines:
+            final_lines.append(line)
+            if line.strip().startswith("- **Execution Mode**:") or line.strip().startswith("- **Type**:"):
+                if not status_updated:
+                    final_lines.append("- **Approval Status**: approved")
+                    status_updated = True
+                if not hash_updated:
+                    final_lines.append(f"- **Approval Hash**: {canonical_hash}")
+                    hash_updated = True
+        new_lines = final_lines
+
+    tc_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    print(f"✅ Kasus Uji berhasil disetujui (Approved):")
+    print(f"   • File: {tc_path.relative_to(repo_root)}")
+    print(f"   • ID: {parsed.get('id')}")
+    print(f"   • Approval Hash: {canonical_hash}")
+    return 0
 
 def cmd_run(args):
     test_case_file = args.test_case or "test-cases/TC-001-login-valid.md"
@@ -99,6 +152,10 @@ def main():
 
     parser_list = subparsers.add_parser("list", help="Daftar riwayat eksekusi pengujian")
     parser_list.set_defaults(func=cmd_list)
+
+    parser_approve = subparsers.add_parser("approve", help="Verifikasi dan setujui kasus uji dengan kalkulasi hash kanonikal")
+    parser_approve.add_argument("test_case", help="Path file kasus uji markdown yang akan di-approve")
+    parser_approve.set_defaults(func=cmd_approve)
 
     args = parser.parse_args()
     return args.func(args)
