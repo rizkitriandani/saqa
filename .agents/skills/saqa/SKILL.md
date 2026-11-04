@@ -115,9 +115,17 @@ Baca output eksekusi dan sajikan ke pengguna:
 
 ---
 
-## 5. Perintah CLI Referensi
+## 5. Resolusi Lokasi Repository & Perintah CLI
 
-- **Jalankan Uji**: `python3 cli.py run <path_to_test_case.md>`
-- **Setujui Uji**: `python3 cli.py approve <path_to_test_case.md>`
-- **Publikasi Ulang**: `python3 cli.py publish <run_id>`
-- **Lihat Riwayat**: `python3 cli.py list`
+Skill ini dapat dijalankan dari direktori kerja mana pun. Agen harus menyelesaikan lokasi root repositori `sangQA`:
+1. Cek environment variable `SAQA_ROOT` jika disetel.
+2. Cek apakah direktori kerja saat ini adalah root `sangQA` (memiliki file `cli.py`).
+3. Gunakan path instalasi standar: `/root/dev/sangQA`.
+
+Contoh eksekusi:
+- **Setujui Uji**: `python3 <SAQA_ROOT>/cli.py approve <path_to_test_case.md>`
+- **Jalankan Uji**: `python3 <SAQA_ROOT>/cli.py run <path_to_test_case.md> --no-publish`
+- **Publikasikan**: `python3 <SAQA_ROOT>/cli.py publish <run_id>`
+- **Lihat Riwayat**: `python3 <SAQA_ROOT>/cli.py list`
+
+*(Catatan: Jalankan selalu dengan flag `--no-publish` terlebih dahulu untuk meninjau artefak lokal sebelum mengunggah ke Google Drive).*
