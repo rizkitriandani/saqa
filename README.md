@@ -36,7 +36,7 @@ SAQA separates testing responsibilities into three decoupled aspects:
 | **Jira Cloud Integration** | ✅ Active | Inspect tickets, run referenced tests, and attach DOCX/video + verdict comments (`cli.py jira`). |
 | **Automated CI/CD Trigger** | ✅ Active | GitHub Actions runner triggered via Jira Automation (`.github/workflows/saqa-jira.yml`). |
 | **Pi Coding Agent Skill** | ✅ Active | Portable `SKILL.md` and prompt template enabling `/saqa` slash commands. |
-| **Hermes Agent Support** | ⏳ Roadmap | Skill directory linked; live Hermes binary execution pending local runtime setup. |
+| **Hermes Agent Plugin & Skill** | ✅ Active | Native toolset (`saqa_run`, `saqa_approve`, etc.) and `/saqa` slash command in Hermes. |
 | **Google Docs External Watcher** | ⏳ Roadmap | Direct synchronization from Google Drive folders as test case source. |
 
 ---
@@ -106,6 +106,30 @@ python3 -m unittest discover tests
    ```text
    /reload
    ```
+
+---
+
+## Install in Hermes Agent (Nous Research)
+
+SAQA ships both a native **Plugin** (providing structured tool calls and slash commands) and an **Agent Skill** for Hermes Agent:
+
+1. **Register the Plugin & Skill**:
+   ```bash
+   mkdir -p ~/.hermes/plugins ~/.hermes/skills
+   ln -s "$SAQA_ROOT/plugins/hermes" ~/.hermes/plugins/saqa
+   ln -s "$SAQA_ROOT/.agents/skills/saqa" ~/.hermes/skills/saqa
+   ```
+
+2. **Enable in Hermes Config (`~/.hermes/config.yaml`)**:
+   ```yaml
+   plugins:
+     enabled:
+       - saqa
+   ```
+
+3. **Verify in Hermes**:
+   Start Hermes and type `/plugins` to see `✓ saqa v1.0.0 (5 tools, 1 commands)`.
+   *(See [`docs/hermes-setup.md`](docs/hermes-setup.md) for full configuration details).*
 
 ---
 

@@ -1,0 +1,13 @@
+name: saqa
+version: 1.0.0
+description: SAQA browser E2E QA automation, test authoring, and failure diagnostics
+author: SAQA Team
+homepage: https://github.com/rizkitriandani/saqa
+provides_tools:
+  - saqa_run
+  - saqa_approve
+  - saqa_diagnose
+  - saqa_jira_inspect
+  - saqa_jira_process
+provides_commands:
+  - saqa
