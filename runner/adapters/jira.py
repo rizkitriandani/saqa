@@ -140,18 +140,18 @@ def extract_test_case_references(description_text: str, test_cases_dir: Path) ->
     """
     Mengekstrak referensi kasus uji (misal: TC-001) HANYA dari bagian 'Test Cases' pada deskripsi tiket.
     Fail-closed:
-    - Tidak mencari di luar heading 'Test Cases' (mencegah salah deteksi teks bebas).
-    - Tidak membuat direktori selama pembacaan.
+    - Heading 'Test Cases' terikat pada awal baris (mencegah salah deteksi di tengah kalimat).
+    - Berhenti pada heading berikutnya.
     - Urutan kemunculan dipertahankan, deduplikasi case-insensitive.
     - Setiap ID wajib menemukan tepat 1 berkas yang cocok di test_cases_dir.
     """
-    if not test_cases_dir.exists():
-        return []
-
-    # Hanya isolasi bagian di bawah heading atau label 'Test Cases'
-    m_section = re.search(r'(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases|Test\s+Cases\s*:?)(.*?)(?=(?:###?\s*|h[1-6]\.\s*|$))', description_text, re.DOTALL | re.IGNORECASE)
+    # Heading terikat awal baris
+    m_section = re.search(r'(?:^|\n)\s*(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases|Test\s+Cases\s*:?)(.*?)(?=(?:\n\s*###?|\n\s*h[1-6]\.|$))', description_text, re.DOTALL | re.IGNORECASE)
     if not m_section:
         return []
+
+    if not test_cases_dir.exists():
+        raise FileNotFoundError(f"Direktori kasus uji '{test_cases_dir}' tidak ditemukan pada proyek ini.")
 
     search_target = m_section.group(1)
     raw_matches = re.findall(r'\b(TC-\d+)\b', search_target, re.IGNORECASE)
@@ -244,24 +244,43 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
 def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, project_root: Path, drive_info: dict = None, force: bool = False) -> Dict[str, Any]:
     """
     Mempublikasikan artefak pengujian (DOCX, video) dan komentar ke tiket Jira secara idempoten.
+    - Menolak perpindahan target tenant atau tiket yang berbeda dari publikasi sebelumnya.
     - Menyimpan ID attachment dan komentar segera ke metadata.json setelah setiap aksi.
     - Retry tidak menduplikasi file yang sudah berhasil diunggah sebelumnya.
     """
-    safe_run_id = Path(run_id).name
+    if not re.match(r'^[A-Za-z0-9_-]+$', run_id):
+        raise ValueError(f"Format run_id '{run_id}' tidak valid (hanya karakter alfanumerik, dash, dan underscore).")
+
+    safe_run_id = run_id
     run_dir = project_root / "artifacts" / safe_run_id
     meta_path = run_dir / "metadata.json"
     if not meta_path.exists():
-        raise FileNotFoundError(f"metadata.json untuk {safe_run_id} tidak ditemukan.")
+        raise FileNotFoundError(f"metadata.json untuk {safe_run_id} tidak ditemukan di {project_root}.")
 
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
+    target_tenant = client.base_url
+    clean_key = client._validate_issue_key(issue_key)
+
     jira_status = meta.setdefault("jira_publish_status", {
-        "issue_key": issue_key,
+        "tenant": target_tenant,
+        "issue_key": clean_key,
         "published": False,
         "attachments": {},
         "comment_id": None
     })
+
+    # Verifikasi destination binding agar run tidak salah publikasi ke tiket/tenant lain
+    saved_tenant = jira_status.get("tenant")
+    saved_key = jira_status.get("issue_key")
+    if saved_tenant and saved_tenant != target_tenant:
+        raise ValueError(f"Target tenant mismatch: run ini sebelumnya ditautkan ke '{saved_tenant}', bukan '{target_tenant}'.")
+    if saved_key and saved_key != clean_key:
+        raise ValueError(f"Target issue key mismatch: run ini sebelumnya ditautkan ke '{saved_key}', bukan '{clean_key}'.")
+
+    jira_status["tenant"] = target_tenant
+    jira_status["issue_key"] = clean_key
 
     if jira_status.get("published") and not force:
         return jira_status

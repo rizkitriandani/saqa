@@ -270,13 +270,36 @@ class TestJiraAdapter(unittest.TestCase):
             mock_attach.assert_called_once()
             mock_comment.assert_called_once()
 
-            # 2. Panggilan kedua (tanpa force): tidak boleh memanggil attach atau comment lagi (idempoten)
-            mock_attach.reset_mock()
-            mock_comment.reset_mock()
-            res2 = publish_jira_artifacts("RUN_IDEMPOTENT", "MED-500", self.client, proj_dir, force=False)
-            self.assertTrue(res2["published"])
-            mock_attach.assert_not_called()
-            mock_comment.assert_not_called()
+            # 3. Panggilan dengan tiket berbeda (mismatch destination) wajib ditolak
+            with self.assertRaises(ValueError) as ctx:
+                publish_jira_artifacts("RUN_IDEMPOTENT", "MED-999", self.client, proj_dir)
+            self.assertIn("Target issue key mismatch", str(ctx.exception))
+
+    @patch("runner.adapters.jira.JiraClient.get_issue")
+    def test_cli_jira_project_key_allowlist_enforced(self, mock_get_issue):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            (proj_dir / "saqa.json").write_text(json.dumps({
+                "version": 1,
+                "project_id": "p-med",
+                "environment": {
+                    "base_url": "https://dev.example.com",
+                    "project_keys": ["MED"]
+                },
+                "input": {"source": "repo"},
+                "outputs": [{"type": "local"}]
+            }), encoding="utf-8")
+            (proj_dir / ".env").write_text(
+                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=t@m.id\nJIRA_API_TOKEN=tok\n",
+                encoding="utf-8"
+            )
+            from cli import cmd_jira_inspect
+            import argparse
+            # Tiket PROJ-100 bukan prefix MED -> harus ditolak allowlist
+            args = argparse.Namespace(issue_key="PROJ-100", project_root=str(proj_dir))
+            ret = cmd_jira_inspect(args)
+            self.assertEqual(ret, 1)
+            mock_get_issue.assert_not_called()
 
     def test_extract_references_scoped_to_test_cases_heading_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:

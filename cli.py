@@ -212,6 +212,14 @@ def cmd_jira_inspect(args):
     project_root = Path(args.project_root).resolve()
     issue_key = args.issue_key.strip().upper()
     try:
+        proj_cfg = load_project_config(project_root)
+        allowed_keys = proj_cfg.get("environment", {}).get("project_keys", [])
+        if allowed_keys:
+            proj_prefix = issue_key.split("-")[0]
+            if proj_prefix not in allowed_keys:
+                print(f"❌ Project key '{proj_prefix}' tidak ada dalam allowlist proyek: {allowed_keys}")
+                return 1
+
         client = get_jira_client(project_root)
         issue = client.get_issue(issue_key)
         fields = issue.get("fields", {})
@@ -245,8 +253,15 @@ def cmd_jira_process(args):
     no_publish = getattr(args, "no_publish", False)
 
     try:
-        client = get_jira_client(project_root)
         proj_cfg = load_project_config(project_root)
+        allowed_keys = proj_cfg.get("environment", {}).get("project_keys", [])
+        if allowed_keys:
+            proj_prefix = issue_key.split("-")[0]
+            if proj_prefix not in allowed_keys:
+                print(f"❌ Project key '{proj_prefix}' tidak ada dalam allowlist proyek: {allowed_keys}")
+                return 1
+
+        client = get_jira_client(project_root)
         issue = client.get_issue(issue_key)
         fields = issue.get("fields", {})
         summary = fields.get("summary", "-")
@@ -296,7 +311,8 @@ def cmd_jira_process(args):
                     f"Draf kasus uji dibuat di `{draft_file.relative_to(project_root)}` dengan status *pending*. "
                     f"Mohon review dan jalankan approve sebelum pengujian dapat dieksekusi."
                 )
-                if not no_publish:
+                jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
+                if not no_publish and (jira_outputs or not proj_cfg.get("outputs")):
                     client.post_comment(issue_key, msg)
                 print(f"ℹ️  Draf kasus uji dibuat di {draft_file}. Menunggu review & approval manusia.")
                 return 0
