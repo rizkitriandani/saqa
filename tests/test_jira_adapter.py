@@ -270,10 +270,64 @@ class TestJiraAdapter(unittest.TestCase):
             mock_attach.assert_called_once()
             mock_comment.assert_called_once()
 
+            # 2. Panggilan kedua (idempoten): tidak boleh memanggil attach atau comment lagi
+            mock_attach.reset_mock()
+            mock_comment.reset_mock()
+            res2 = publish_jira_artifacts("RUN_IDEMPOTENT", "MED-500", self.client, proj_dir, force=False)
+            self.assertTrue(res2["published"])
+            mock_attach.assert_not_called()
+            mock_comment.assert_not_called()
+
             # 3. Panggilan dengan tiket berbeda (mismatch destination) wajib ditolak
             with self.assertRaises(ValueError) as ctx:
                 publish_jira_artifacts("RUN_IDEMPOTENT", "MED-999", self.client, proj_dir)
             self.assertIn("Target issue key mismatch", str(ctx.exception))
+
+    @patch("runner.adapters.jira.JiraClient.attach_file")
+    @patch("runner.adapters.jira.JiraClient.post_comment")
+    def test_publish_jira_partial_failure_retry_recovery(self, mock_comment, mock_attach):
+        # Skenario: DOCX berhasil, tetapi video gagal di panggilan pertama.
+        # Pada panggilan kedua (retry), DOCX TIDAK diunggah ulang, video diunggah, dan komentar diposting.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_PARTIAL"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_PARTIAL",
+                "test_case_id": "TC-001",
+                "verdict": "PASSED"
+            }), encoding="utf-8")
+            (run_dir / "report.docx").write_bytes(b"PK0304")
+            (run_dir / "evidence.webm").write_bytes(b"WEBM01")
+
+            from runner.adapters.jira import publish_jira_artifacts
+
+            # Panggilan pertama: docx sukses, tapi video raise exception
+            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], RuntimeError("Upload video timeout")]
+            with self.assertRaises(RuntimeError):
+                publish_jira_artifacts("RUN_PARTIAL", "MED-600", self.client, proj_dir)
+
+            # Verifikasi metadata mencatat docx tapi published masih False
+            with open(meta_path) as f:
+                saved_meta = json.load(f)
+            self.assertFalse(saved_meta["jira_publish_status"]["published"])
+            self.assertIn("report.docx", saved_meta["jira_publish_status"]["attachments"])
+            self.assertNotIn("evidence.webm", saved_meta["jira_publish_status"]["attachments"])
+
+            # Panggilan kedua (retry): docx TIDAK boleh diunggah ulang! Video diunggah dan komentar diposting.
+            mock_attach.reset_mock()
+            mock_comment.reset_mock()
+            mock_attach.side_effect = [[{"id": "att_vid_2", "filename": "evidence.webm"}]]
+            mock_comment.return_value = {"id": "cmt_200"}
+
+            res_retry = publish_jira_artifacts("RUN_PARTIAL", "MED-600", self.client, proj_dir)
+            self.assertTrue(res_retry["published"])
+            self.assertEqual(res_retry["comment_id"], "cmt_200")
+            # attach_file hanya dipanggil 1 kali (hanya untuk video, bukan docx)
+            mock_attach.assert_called_once()
+            self.assertEqual(mock_attach.call_args[0][1].name, "evidence.webm")
+            mock_comment.assert_called_once()
 
     @patch("runner.adapters.jira.JiraClient.get_issue")
     def test_cli_jira_project_key_allowlist_enforced(self, mock_get_issue):

@@ -260,6 +260,7 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
+    # 1. Simpan binding tenant & issue_key segera sebelum request jaringan pertama
     target_tenant = client.base_url
     clean_key = client._validate_issue_key(issue_key)
 
@@ -281,6 +282,8 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
 
     jira_status["tenant"] = target_tenant
     jira_status["issue_key"] = clean_key
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
 
     if jira_status.get("published") and not force:
         return jira_status
@@ -288,31 +291,35 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     docx_path = run_dir / "report.docx"
     video_path = run_dir / "evidence.webm"
 
-    # 1. Upload DOCX jika belum tercatat di status
+    # 2. Upload DOCX jika ada dan belum tercatat di status
     if docx_path.exists():
         docx_name = docx_path.name
         if docx_name not in jira_status["attachments"] or force:
             att_docx = client.attach_file(issue_key, docx_path)
-            if att_docx:
-                jira_status["attachments"][docx_name] = att_docx[0].get("id")
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
+            if not att_docx or not att_docx[0].get("id"):
+                raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
+            jira_status["attachments"][docx_name] = att_docx[0].get("id")
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
 
-    # 2. Upload Video jika belum tercatat di status
+    # 3. Upload Video jika ada dan belum tercatat di status
     if video_path.exists():
         video_name = video_path.name
         if video_name not in jira_status["attachments"] or force:
             att_vid = client.attach_file(issue_key, video_path)
-            if att_vid:
-                jira_status["attachments"][video_name] = att_vid[0].get("id")
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
+            if not att_vid or not att_vid[0].get("id"):
+                raise RuntimeError(f"Gagal mengunggah attachment {video_name}: respons Jira tidak memuat ID file.")
+            jira_status["attachments"][video_name] = att_vid[0].get("id")
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
 
-    # 3. Post Komentar Ringkasan jika belum pernah diposting
+    # 4. Post Komentar Ringkasan jika belum pernah diposting
     if not jira_status.get("comment_id") or force:
         attachment_summary = [{"filename": k} for k in jira_status["attachments"].keys()]
         comment_body = format_jira_verdict_comment(meta, attachment_summary, drive_info)
         res_cmt = client.post_comment(issue_key, comment_body)
+        if not res_cmt or not res_cmt.get("id"):
+            raise RuntimeError("Gagal memposting komentar ke Jira: respons Jira tidak memuat ID komentar.")
         jira_status["comment_id"] = res_cmt.get("id")
 
     jira_status["published"] = True

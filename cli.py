@@ -178,9 +178,18 @@ def cmd_publish(args):
 
     if jira_issue:
         try:
+            proj_cfg = load_project_config(project_root)
+            allowed_keys = proj_cfg.get("environment", {}).get("project_keys", [])
+            clean_issue = jira_issue.strip().upper()
+            if allowed_keys:
+                prefix = clean_issue.split("-")[0]
+                if prefix not in allowed_keys:
+                    print(f"❌ Project key '{prefix}' tidak ada dalam allowlist proyek: {allowed_keys}")
+                    return 1
+
             client = get_jira_client(project_root)
-            res_j = publish_jira_artifacts(run_id, jira_issue.strip().upper(), client, project_root, drive_info=pub_result, force=force)
-            print(f"✅ Publikasi ke tiket Jira {jira_issue} selesai:")
+            res_j = publish_jira_artifacts(run_id, clean_issue, client, project_root, drive_info=pub_result, force=force)
+            print(f"✅ Publikasi ke tiket Jira {clean_issue} selesai:")
             print(json.dumps(res_j, indent=2))
         except Exception as e_j:
             print(f"❌ Gagal mempublikasikan ke Jira {jira_issue}: {str(e_j)}")
