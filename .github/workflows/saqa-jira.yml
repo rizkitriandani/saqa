@@ -1,0 +1,128 @@
+name: SAQA Jira Automated Runner
+
+'on':
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Key tiket Jira (misal: MED-101)"
+        required: true
+        type: string
+      project_id:
+        description: "ID Proyek (default: saqa)"
+        required: false
+        default: "saqa"
+        type: string
+      no_publish:
+        description: "Lewati publikasi ke Jira / Google Drive"
+        required: false
+        default: false
+        type: boolean
+
+  repository_dispatch:
+    types: [jira-trigger]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: saqa-jira-${{ github.event.client_payload.issue_key || github.event.inputs.issue_key || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  run-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Runtime Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright python-docx google-api-python-client google-auth
+          python3 -m playwright install --with-deps chromium
+
+      - name: Extract & Validate Input Payload
+        id: payload
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_ISSUE: ${{ github.event.client_payload.issue_key }}
+          DISPATCH_PROJECT: ${{ github.event.client_payload.project_id }}
+          INPUT_ISSUE: ${{ github.event.inputs.issue_key }}
+          INPUT_PROJECT: ${{ github.event.inputs.project_id }}
+          INPUT_NO_PUB: ${{ github.event.inputs.no_publish }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            TARGET_ISSUE="$DISPATCH_ISSUE"
+            TARGET_PROJECT="${DISPATCH_PROJECT:-saqa}"
+            NO_PUB="false"
+          else
+            TARGET_ISSUE="$INPUT_ISSUE"
+            TARGET_PROJECT="${INPUT_PROJECT:-saqa}"
+            NO_PUB="$INPUT_NO_PUB"
+          fi
+
+          # Keamanan: Sanitasi Issue Key dengan regex ketat (mencegah command/path injection)
+          CLEAN_ISSUE=$(echo "$TARGET_ISSUE" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+          if ! [[ "$CLEAN_ISSUE" =~ ^[A-Z0-9]+-[0-9]+$ ]]; then
+            echo "::error::Format Issue Key '$CLEAN_ISSUE' tidak valid. Format yang diizinkan: ^[A-Z0-9]+-[0-9]+$ (misal: MED-101)."
+            exit 1
+          fi
+
+          CLEAN_PROJECT=$(echo "$TARGET_PROJECT" | tr -d ' ')
+          if ! [[ "$CLEAN_PROJECT" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::Format Project ID '$CLEAN_PROJECT' tidak valid. Hanya alfanumerik, dash, dan underscore."
+            exit 1
+          fi
+
+          echo "ISSUE_KEY=$CLEAN_ISSUE" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_ID=$CLEAN_PROJECT" >> "$GITHUB_OUTPUT"
+          echo "NO_PUBLISH=$NO_PUB" >> "$GITHUB_OUTPUT"
+          echo "Validated Target: Issue=$CLEAN_ISSUE, Project=$CLEAN_PROJECT, NoPublish=$NO_PUB"
+
+      - name: Prepare Service Account Credentials (Optional)
+        env:
+          GCP_CREDS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+        run: |
+          if [ -n "$GCP_CREDS_JSON" ]; then
+            mkdir -p credentials
+            chmod 700 credentials
+            echo "$GCP_CREDS_JSON" > credentials/service-account.json
+            chmod 600 credentials/service-account.json
+            echo "Google Service Account credentials prepared."
+          fi
+
+      - name: Execute SAQA Jira Runner
+        env:
+          TARGET_ISSUE_KEY: ${{ steps.payload.outputs.ISSUE_KEY }}
+          NO_PUB_FLAG: ${{ steps.payload.outputs.NO_PUBLISH }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          DEV_BASE_URL: ${{ secrets.DEV_BASE_URL }}
+          QA_USERNAME: ${{ secrets.QA_USERNAME }}
+          QA_PASSWORD: ${{ secrets.QA_PASSWORD }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: credentials/service-account.json
+        run: |
+          EXTRA_ARGS=""
+          if [ "$NO_PUB_FLAG" = "true" ]; then
+            EXTRA_ARGS="--no-publish"
+          fi
+
+          python3 cli.py jira process "$TARGET_ISSUE_KEY" --project-root . $EXTRA_ARGS
+
+      - name: Upload Test Artifacts (Evidence & Reports)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saqa-artifacts-${{ steps.payload.outputs.ISSUE_KEY }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
