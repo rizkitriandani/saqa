@@ -58,15 +58,17 @@ def extract_status_from_payload(payload: dict) -> Optional[str]:
     return None
 
 def extract_event_id_from_payload(payload: dict) -> Optional[str]:
-    """Mengekstrak event_id eksplisit dari payload Jira atau automation."""
+    """Mengekstrak event_id eksplisit dari payload. Wajib string/int non-kosong dengan panjang <= 128 karakter."""
     candidates = [
         payload.get("event_id"),
         payload.get("webhookEventId"),
         payload.get("timestamp"),
     ]
     for eid in candidates:
-        if eid:
-            return str(eid).strip()
+        if eid and isinstance(eid, (str, int)):
+            clean = str(eid).strip()
+            if clean and len(clean) <= 128 and re.match(r'^[A-Za-z0-9_-]+$', clean):
+                return clean
     return None
 
 def dispatch_github_actions(issue_key: str, env_vars: dict) -> Dict[str, Any]:
@@ -182,6 +184,7 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
     project_root: Path = Path.cwd()
     runner_override: Optional[str] = None
     allow_unauthenticated: bool = False
+    timeout: int = 15  # Socket read timeout untuk mencegah hanging request
 
     def _send_json(self, status_code: int, data: dict):
         resp_bytes = json.dumps(data, indent=2).encode("utf-8")
@@ -397,6 +400,8 @@ def start_webhook_server(
         logger.info("\nServer webhook dihentikan.")
     finally:
         _WORKER_STOP_EVENT.set()
+        if _WORKER_THREAD and _WORKER_THREAD.is_alive():
+            _WORKER_THREAD.join(timeout=5.0)
         httpd.server_close()
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

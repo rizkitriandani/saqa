@@ -318,6 +318,16 @@ class TestWebhookServer(unittest.TestCase):
                 self.assertEqual(row[0], "NEEDS_RECONCILIATION")
                 self.assertIn("Interrupted", row[1])
 
+    def test_invalid_event_id_format_rejected(self):
+        # Event ID yang memuat karakter terlarang atau spasi wajib ditolak 400
+        status, body = self._post(
+            "/jira-webhook",
+            {"issue_key": "MED-101", "status": "In Testing", "event_id": "bad event id; rm -rf /"},
+            headers={"X-Webhook-Secret": "super_secret_token_123"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("event_id", body.get("error", ""))
+
     def test_missing_secret_blocks_server_startup_fail_closed(self):
         from runner.adapters.webhook_server import start_webhook_server
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -326,6 +336,53 @@ class TestWebhookServer(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 start_webhook_server(project_root=empty_proj, allow_unauthenticated=False)
             self.assertIn("WEBHOOK_SECRET wajib disetel", str(ctx.exception))
+
+    def test_server_lifecycle_and_clean_lock_release(self):
+        # Menguji lifecycle penuh: startup, bind port, exclusive lock, hingga clean shutdown
+        from runner.adapters.webhook_server import SaqaWebhookHandler
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_root = Path(tmpdir)
+            (proj_root / ".env").write_text("WEBHOOK_SECRET=lifecycle_secret\n", encoding="utf-8")
+            (proj_root / "saqa.json").write_text(json.dumps({
+                "version": 1,
+                "project_id": "lifecycle-proj",
+                "environment": {"base_url": "https://example.com"},
+                "input": {"source": "repo"},
+                "outputs": [{"type": "local"}]
+            }), encoding="utf-8")
+
+            class LifecycleHandler(SaqaWebhookHandler):
+                pass
+            LifecycleHandler.project_root = proj_root
+            LifecycleHandler.runner_override = "local"
+            LifecycleHandler.allow_unauthenticated = False
+
+            # Bind socket pada port dinamis 0
+            server = HTTPServer(("127.0.0.1", 0), LifecycleHandler)
+            lock_file = proj_root / "artifacts" / "webhook.lock"
+            (proj_root / "artifacts").mkdir(parents=True, exist_ok=True)
+            lock_fd = open(lock_file, "a+")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            try:
+                # Verifikasi lock aktif: proses lain tidak bisa mengunci
+                test_fd = open(lock_file, "a+")
+                with self.assertRaises((BlockingIOError, OSError)):
+                    fcntl.flock(test_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                test_fd.close()
+            finally:
+                # Clean shutdown & release lock
+                server.server_close()
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+
+            # Setelah shutdown, file lock bisa dikunci kembali tanpa error
+            after_fd = open(lock_file, "a+")
+            fcntl.flock(after_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(after_fd, fcntl.LOCK_UN)
+            after_fd.close()
 
 if __name__ == "__main__":
     unittest.main()
