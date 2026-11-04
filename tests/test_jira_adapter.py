@@ -330,6 +330,45 @@ class TestJiraAdapter(unittest.TestCase):
             self.assertEqual(mock_attach.call_args[0][1].name, "evidence.webm")
             mock_comment.assert_called_once()
 
+    @patch("runner.adapters.jira.JiraClient.attach_file")
+    @patch("runner.adapters.jira.JiraClient.post_comment")
+    def test_publish_jira_timeout_sets_needs_reconciliation_and_blocks_replay(self, mock_comment, mock_attach):
+        # Skenario: Operasi timeout pada video upload
+        # Status wajib menjadi NEEDS_RECONCILIATION, dan panggilan berikutnya DITOLAK otomatis
+        from runner.adapters.jira import JiraTimeoutError, publish_jira_artifacts
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_TIMEOUT"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_TIMEOUT",
+                "test_case_id": "TC-001",
+                "verdict": "PASSED"
+            }), encoding="utf-8")
+            (run_dir / "report.docx").write_bytes(b"PK0304")
+            (run_dir / "evidence.webm").write_bytes(b"WEBM01")
+
+            # 1. Panggilan pertama: docx sukses, tapi video timeout
+            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], JiraTimeoutError("Socket timeout on video")]
+            with self.assertRaises(JiraTimeoutError):
+                publish_jira_artifacts("RUN_TIMEOUT", "MED-800", self.client, proj_dir)
+
+            # Metadata harus mencatat NEEDS_RECONCILIATION
+            with open(meta_path) as f:
+                saved_meta = json.load(f)
+            self.assertEqual(saved_meta["jira_publish_status"]["status"], "NEEDS_RECONCILIATION")
+            self.assertEqual(saved_meta["jira_publish_status"]["in_flight_operation"], "upload_video")
+
+            # 2. Panggilan kedua: replay otomatis wajib DITOLAK sebelum ada request jaringan apapun
+            mock_attach.reset_mock()
+            mock_comment.reset_mock()
+            with self.assertRaises(RuntimeError) as ctx:
+                publish_jira_artifacts("RUN_TIMEOUT", "MED-800", self.client, proj_dir)
+            self.assertIn("NEEDS_RECONCILIATION", str(ctx.exception))
+            mock_attach.assert_not_called()
+            mock_comment.assert_not_called()
+
     def test_publish_jira_missing_docx_fails_closed(self):
         # Jika report.docx tidak ditemukan, publikasi wajib gagal (fail-closed)
         with tempfile.TemporaryDirectory() as tmpdir:

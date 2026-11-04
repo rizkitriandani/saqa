@@ -13,6 +13,14 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.get_full_url(), code, f"HTTP redirect [{code}] ditolak untuk endpoint API Jira", headers, fp)
 
+class JiraAPIError(RuntimeError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(f"Jira API Error [{status_code}]: {message}")
+        self.status_code = status_code
+
+class JiraTimeoutError(RuntimeError):
+    pass
+
 class JiraClient:
     """Klien REST API Jira Cloud terisolasi menggunakan library bawaan urllib."""
 
@@ -61,9 +69,12 @@ class JiraClient:
                 return json.loads(resp_bytes.decode("utf-8"))
         except urllib.error.HTTPError as e:
             # Masking error agar tidak mengekspos token/rahasia ke log
-            raise RuntimeError(f"Jira API Error [{e.code}] on {method} {endpoint}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Jira Connection Error on {method} {endpoint}: {str(e)}")
+            raise JiraAPIError(e.code, f"{method} {endpoint}")
+        except (TimeoutError, urllib.error.URLError) as e:
+            err_str = str(e)
+            if "timed out" in err_str.lower() or (hasattr(e, "reason") and isinstance(e.reason, TimeoutError)):
+                raise JiraTimeoutError(f"Jira Connection Timeout on {method} {endpoint}: {err_str}")
+            raise RuntimeError(f"Jira Connection Error on {method} {endpoint}: {err_str}")
 
     def get_issue(self, issue_key: str) -> Dict[str, Any]:
         """Mengambil data tiket Jira (summary, description, status, project)."""
@@ -285,6 +296,14 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    # Tolak replay otomatis jika status sebelumnya adalah NEEDS_RECONCILIATION
+    if jira_status.get("status") == "NEEDS_RECONCILIATION":
+        raise RuntimeError(
+            f"Publikasi ke Jira ditolak: status saat ini adalah 'NEEDS_RECONCILIATION' akibat timeout atau status tak tentu "
+            f"pada operasi '{jira_status.get('in_flight_operation', 'unknown')}'. "
+            "Periksa tiket Jira secara manual untuk memastikan apakah file/komentar sudah terbuat sebelum mencoba ulang."
+        )
+
     if jira_status.get("published") and not force:
         return jira_status
 
@@ -302,34 +321,85 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     # 2. Upload DOCX jika belum tercatat di status
     docx_name = docx_path.name
     if docx_name not in jira_status["attachments"] or force:
-        att_docx = client.attach_file(issue_key, docx_path)
-        if not att_docx or not att_docx[0].get("id"):
-            raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
-        jira_status["attachments"][docx_name] = att_docx[0].get("id")
+        jira_status["in_flight_operation"] = "upload_docx"
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+
+        try:
+            att_docx = client.attach_file(issue_key, docx_path)
+            if not att_docx or not att_docx[0].get("id"):
+                raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
+            jira_status["attachments"][docx_name] = att_docx[0].get("id")
+            jira_status["in_flight_operation"] = None
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+        except JiraTimeoutError:
+            jira_status["status"] = "NEEDS_RECONCILIATION"
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            raise
+        except Exception:
+            jira_status["in_flight_operation"] = None
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            raise
 
     # 3. Upload Video jika ada dan belum tercatat di status
     if video_path.exists():
         video_name = video_path.name
         if video_name not in jira_status["attachments"] or force:
-            att_vid = client.attach_file(issue_key, video_path)
-            if not att_vid or not att_vid[0].get("id"):
-                raise RuntimeError(f"Gagal mengunggah attachment {video_name}: respons Jira tidak memuat ID file.")
-            jira_status["attachments"][video_name] = att_vid[0].get("id")
+            jira_status["in_flight_operation"] = "upload_video"
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
 
+            try:
+                att_vid = client.attach_file(issue_key, video_path)
+                if not att_vid or not att_vid[0].get("id"):
+                    raise RuntimeError(f"Gagal mengunggah attachment {video_name}: respons Jira tidak memuat ID file.")
+                jira_status["attachments"][video_name] = att_vid[0].get("id")
+                jira_status["in_flight_operation"] = None
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+            except JiraTimeoutError:
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+                raise
+            except Exception:
+                jira_status["in_flight_operation"] = None
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+                raise
+
     # 4. Post Komentar Ringkasan jika belum pernah diposting
     if not jira_status.get("comment_id") or force:
-        attachment_summary = [{"filename": k} for k in jira_status["attachments"].keys()]
-        comment_body = format_jira_verdict_comment(meta, attachment_summary, drive_info)
-        res_cmt = client.post_comment(issue_key, comment_body)
-        if not res_cmt or not res_cmt.get("id"):
-            raise RuntimeError("Gagal memposting komentar ke Jira: respons Jira tidak memuat ID komentar.")
-        jira_status["comment_id"] = res_cmt.get("id")
+        jira_status["in_flight_operation"] = "post_comment"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        try:
+            attachment_summary = [{"filename": k} for k in jira_status["attachments"].keys()]
+            comment_body = format_jira_verdict_comment(meta, attachment_summary, drive_info)
+            res_cmt = client.post_comment(issue_key, comment_body)
+            if not res_cmt or not res_cmt.get("id"):
+                raise RuntimeError("Gagal memposting komentar ke Jira: respons Jira tidak memuat ID komentar.")
+            jira_status["comment_id"] = res_cmt.get("id")
+            jira_status["in_flight_operation"] = None
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+        except JiraTimeoutError:
+            jira_status["status"] = "NEEDS_RECONCILIATION"
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            raise
+        except Exception:
+            jira_status["in_flight_operation"] = None
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            raise
 
     jira_status["published"] = True
+    jira_status["status"] = "PUBLISHED"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
