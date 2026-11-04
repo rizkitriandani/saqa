@@ -50,86 +50,61 @@ SAQA separates testing responsibilities into three decoupled aspects:
 
 ---
 
-## Installation
+## Quick Installation (Zero-Friction)
 
-### 1. Clone & Set Engine Root
+You do **not** need to manually clone this repository. Choose your preferred environment:
 
-Clone SAQA to your machine and define `SAQA_ROOT`:
-
+### Option 1: Pi Coding Agent (One-Line Package Install)
+Inside your terminal, install SAQA directly into Pi:
 ```bash
-git clone https://github.com/rizkitriandani/saqa.git /path/to/saqa
-cd /path/to/saqa
-export SAQA_ROOT="$(pwd)"
+pi install git:github.com/rizkitriandani/saqa
 ```
-*(Tip: Add `export SAQA_ROOT=/path/to/saqa` to your `~/.bashrc` or `~/.zshrc`).*
+*(Pi automatically downloads the package, registers the skill, and enables the `/saqa` slash command).*
 
-### 2. Python Virtual Environment
-
-Create and activate a virtual environment, then install runtime dependencies:
-
+### Option 2: Standalone Global CLI (pipx / pip)
+Install `saqa` globally in your shell environment:
 ```bash
+pipx install git+https://github.com/rizkitriandani/saqa.git
+# or
+pip install git+https://github.com/rizkitriandani/saqa.git
+
+# Auto-register skills/plugins for all installed harnesses (Pi & Hermes) + Playwright:
+saqa setup-harness --playwright
+```
+
+### Option 3: Hermes Agent (Nous Research)
+```bash
+hermes plugins install git:github.com/rizkitriandani/saqa
+```
+
+---
+
+## Manual Developer Installation (From Source)
+
+For developers contributing to SAQA:
+
+### 1. Clone & Setup Virtual Environment
+```bash
+git clone https://github.com/rizkitriandani/saqa.git
+cd saqa
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install core dependencies
-pip install playwright python-docx google-api-python-client google-auth
-
-# Install Playwright browser and Linux system dependencies
+# Install dependencies and local editable package
+pip install -e .
 python3 -m playwright install --with-deps chromium
 ```
 
-Run the offline unit test suite to verify the installation:
+### 2. Auto-Register Harnesses
+```bash
+saqa setup-harness
+```
 
+Run the unit tests to verify:
 ```bash
 python3 -m unittest discover tests
 ```
-*(All 46+ tests should pass with `OK`).*
-
----
-
-## Install Skill in Pi Coding Agent
-
-1. **Register the Skill**:
-   ```bash
-   mkdir -p ~/.agents/skills
-   ln -s "$SAQA_ROOT/.agents/skills/saqa" ~/.agents/skills/saqa
-   ```
-
-2. **Register the Slash Command (`/saqa`)**:
-   ```bash
-   mkdir -p ~/.pi/agent/prompts
-   ln -s "$SAQA_ROOT/prompts/saqa.md" ~/.pi/agent/prompts/saqa.md
-   ```
-
-3. **Activate in Pi**:
-   Launch Pi from the shell where `.venv` is active, then reload prompt templates:
-   ```text
-   /reload
-   ```
-
----
-
-## Install in Hermes Agent (Nous Research)
-
-SAQA ships both a native **Plugin** (providing structured tool calls and slash commands) and an **Agent Skill** for Hermes Agent:
-
-1. **Register the Plugin & Skill**:
-   ```bash
-   mkdir -p ~/.hermes/plugins ~/.hermes/skills
-   ln -s "$SAQA_ROOT/plugins/hermes" ~/.hermes/plugins/saqa
-   ln -s "$SAQA_ROOT/.agents/skills/saqa" ~/.hermes/skills/saqa
-   ```
-
-2. **Enable in Hermes Config (`~/.hermes/config.yaml`)**:
-   ```yaml
-   plugins:
-     enabled:
-       - saqa
-   ```
-
-3. **Verify in Hermes**:
-   Start Hermes and type `/plugins` to see `✓ saqa v1.0.0 (5 tools, 1 commands)`.
-   *(See [`docs/hermes-setup.md`](docs/hermes-setup.md) for full configuration details).*
+*(All 51+ offline tests should pass with `OK`).*
 
 ---
 

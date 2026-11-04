@@ -429,6 +429,73 @@ def cmd_diagnose(args):
         print(f"❌ Gagal mengambil konteks diagnostik: {str(e)}")
         return 1
 
+def cmd_setup_harness(args):
+    target = args.target or "all"
+    home = Path.home()
+    success = True
+
+    if target in ["all", "pi"]:
+        try:
+            skills_dir = home / ".agents" / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            skill_link = skills_dir / "saqa"
+            skill_src = repo_root / ".agents" / "skills" / "saqa"
+            if skill_link.is_symlink() or skill_link.exists():
+                skill_link.unlink()
+            skill_link.symlink_to(skill_src, target_is_directory=True)
+
+            prompts_dir = home / ".pi" / "agent" / "prompts"
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+            prompt_link = prompts_dir / "saqa.md"
+            prompt_src = repo_root / "prompts" / "saqa.md"
+            if prompt_link.is_symlink() or prompt_link.exists():
+                prompt_link.unlink()
+            prompt_link.symlink_to(prompt_src)
+
+            print("✅ Pi Coding Agent integration registered:")
+            print(f"   • Skill: {skill_link} -> {skill_src}")
+            print(f"   • Slash Command: {prompt_link} -> {prompt_src}")
+        except Exception as e:
+            print(f"❌ Failed to register Pi harness: {e}")
+            success = False
+
+    if target in ["all", "hermes"]:
+        try:
+            plugins_dir = home / ".hermes" / "plugins"
+            plugins_dir.mkdir(parents=True, exist_ok=True)
+            plugin_link = plugins_dir / "saqa"
+            plugin_src = repo_root / "plugins" / "hermes"
+            if plugin_link.is_symlink() or plugin_link.exists():
+                plugin_link.unlink()
+            plugin_link.symlink_to(plugin_src, target_is_directory=True)
+
+            h_skills_dir = home / ".hermes" / "skills"
+            h_skills_dir.mkdir(parents=True, exist_ok=True)
+            h_skill_link = h_skills_dir / "saqa"
+            h_skill_src = repo_root / ".agents" / "skills" / "saqa"
+            if h_skill_link.is_symlink() or h_skill_link.exists():
+                h_skill_link.unlink()
+            h_skill_link.symlink_to(h_skill_src, target_is_directory=True)
+
+            print("✅ Hermes Agent integration registered:")
+            print(f"   • Plugin: {plugin_link} -> {plugin_src}")
+            print(f"   • Skill: {h_skill_link} -> {h_skill_src}")
+        except Exception as e:
+            print(f"❌ Failed to register Hermes harness: {e}")
+            success = False
+
+    if args.playwright:
+        import subprocess
+        print("\n📥 Installing Playwright Chromium browser binaries...")
+        p_res = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+        if p_res.returncode == 0:
+            print("✅ Playwright Chromium installed successfully.")
+        else:
+            print("❌ Failed to install Playwright Chromium.")
+            success = False
+
+    return 0 if success else 1
+
 def main():
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--project-root", default=argparse.SUPPRESS, help="Root direktori proyek aktif")
@@ -484,6 +551,12 @@ def main():
     parser_diag.add_argument("run_id", help="ID Run yang gagal (misal: RUN_20261104_xxx)")
     parser_diag.add_argument("--attach", help="Teks analisis akar masalah (root cause) untuk disematkan ke laporan")
     parser_diag.set_defaults(func=cmd_diagnose)
+
+    # Subcommand: setup-harness
+    parser_setup = subparsers.add_parser("setup-harness", parents=[common_parser], help="Daftarkan skill & plugin ke Pi Coding Agent dan Hermes secara otomatis")
+    parser_setup.add_argument("--target", choices=["all", "pi", "hermes"], default="all", help="Target harness (default: all)")
+    parser_setup.add_argument("--playwright", action="store_true", help="Sekaligus install browser Chromium Playwright")
+    parser_setup.set_defaults(func=cmd_setup_harness)
 
     args = parser.parse_args()
     return args.func(args)

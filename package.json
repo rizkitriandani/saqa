@@ -1,0 +1,11 @@
+{
+  "name": "saqa",
+  "version": "1.0.0",
+  "description": "SAQA: AI-Assisted Browser E2E QA Automation, Test Case Authoring, and Failure Diagnostics",
+  "homepage": "https://github.com/rizkitriandani/saqa",
+  "keywords": ["pi-package"],
+  "pi": {
+    "skills": ["skills/saqa", ".agents/skills/saqa"],
+    "prompts": ["prompts/saqa.md"]
+  }
+}

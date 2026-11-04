@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saqa"
+version = "1.0.0"
+description = "SAQA: AI-Assisted Browser E2E QA Automation, Test Case Authoring, and Failure Diagnostics"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "SAQA Team" }
+]
+keywords = ["qa", "playwright", "testing", "automation", "e2e", "ai-agent"]
+dependencies = [
+    "playwright>=1.40.0",
+    "python-docx>=1.0.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.20.0"
+]
+
+[project.scripts]
+saqa = "cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["runner*", "reporter*", "plugins*"]
+
+[tool.setuptools]
+py-modules = ["cli"]
