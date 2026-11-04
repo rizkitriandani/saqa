@@ -142,7 +142,7 @@ def extract_text_from_description(raw_desc: Any) -> str:
             walk_cell(node)
             return " ".join("".join(cell_chunks).split())
 
-        def walk(node):
+        def walk(node, parent_type=None):
             if isinstance(node, dict):
                 ntype = node.get("type")
                 if ntype == "text":
@@ -152,13 +152,13 @@ def extract_text_from_description(raw_desc: Any) -> str:
                     prefix = "#" * lvl
                     chunks.append(f"\n\n{prefix} ")
                     for child in node.get("content", []):
-                        walk(child)
+                        walk(child, ntype)
                     chunks.append("\n")
                     return
                 elif ntype == "codeBlock":
                     chunks.append("\n```\n")
                     for child in node.get("content", []):
-                        walk(child)
+                        walk(child, ntype)
                     chunks.append("\n```\n")
                     return
                 elif ntype == "table":
@@ -179,14 +179,23 @@ def extract_text_from_description(raw_desc: Any) -> str:
                     return
                 elif ntype == "listItem":
                     chunks.append("\n- ")
+                    for child in node.get("content", []):
+                        walk(child, ntype)
+                    return
                 elif ntype == "paragraph":
-                    chunks.append("\n")
+                    if parent_type != "listItem":
+                        chunks.append("\n")
+                    for child in node.get("content", []):
+                        walk(child, ntype)
+                    if parent_type != "listItem":
+                        chunks.append("\n")
+                    return
 
                 for child in node.get("content", []):
-                    walk(child)
+                    walk(child, ntype)
             elif isinstance(node, list):
                 for item in node:
-                    walk(item)
+                    walk(item, parent_type)
 
         walk(raw_desc)
         return "".join(chunks).strip()

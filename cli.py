@@ -286,7 +286,9 @@ def cmd_jira_validate(args):
         desc_raw = fields.get("description", "")
 
         tc_dir_rel = proj_cfg.get("input", {}).get("test_cases_dir", "test-cases")
-        readiness = evaluate_ticket_readiness(desc_raw, project_root, test_cases_dir_rel=tc_dir_rel, issue_key=issue_key)
+        readiness = evaluate_ticket_readiness(
+            desc_raw, project_root, test_cases_dir_rel=tc_dir_rel, issue_key=issue_key, ticket_summary=summary
+        )
 
         print(f"\n🔍 [Jira Validate] Evaluasi Kesiapan Tiket: {issue_key}")
         print(f"   • Summary: {summary}")
@@ -339,7 +341,9 @@ def cmd_jira_process(args):
                 return 0
 
         tc_dir_rel = proj_cfg.get("input", {}).get("test_cases_dir", "test-cases")
-        readiness = evaluate_ticket_readiness(desc_raw, project_root, test_cases_dir_rel=tc_dir_rel, issue_key=issue_key)
+        readiness = evaluate_ticket_readiness(
+            desc_raw, project_root, test_cases_dir_rel=tc_dir_rel, issue_key=issue_key, ticket_summary=summary
+        )
 
         # Jika tiket belum siap dieksekusi (perlu klarifikasi/approval)
         if not readiness["ready"]:

@@ -55,7 +55,8 @@ def evaluate_ticket_readiness(
     description_raw: Any,
     project_root: Path,
     test_cases_dir_rel: str = "test-cases",
-    issue_key: Optional[str] = None
+    issue_key: Optional[str] = None,
+    ticket_summary: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluasi kesiapan tiket secara terstruktur dan fail-closed.
@@ -94,6 +95,23 @@ def evaluate_ticket_readiness(
     if is_full_inline_test_case(desc_text):
         result["candidate_source_type"] = "inline_markdown"
         parsed = parse_markdown_test_case_content(desc_text)
+
+        # Fallback ID & Title jika tidak ditulis eksplisit di dalam bodi deskripsi
+        if parsed.get("id") == "UNKNOWN":
+            m_id = re.search(r'\b(TC-\d+)\b', desc_text, re.IGNORECASE)
+            if m_id:
+                parsed["id"] = m_id.group(1).upper()
+            elif ticket_summary and re.search(r'\b(TC-\d+)\b', ticket_summary, re.IGNORECASE):
+                parsed["id"] = re.search(r'\b(TC-\d+)\b', ticket_summary, re.IGNORECASE).group(1).upper()
+            elif issue_key:
+                parsed["id"] = issue_key
+
+        if parsed.get("title") == "Unknown Test Case":
+            if ticket_summary:
+                parsed["title"] = ticket_summary
+            elif issue_key:
+                parsed["title"] = f"Test Scenario for {issue_key}"
+
         c_errors = validate_test_case_contract(parsed)
         tc_id = parsed.get("id") or (issue_key or "INLINE")
 
