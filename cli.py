@@ -350,34 +350,37 @@ def cmd_jira_process(args):
             print(f"   • Details: {details}")
             print(f"   • Action Required: {action_req}")
 
-            # 1. Simpan sesi klarifikasi di SQLite
+            # 1. Simpan sesi klarifikasi di SQLite dengan konten skenario yang terdeteksi
             db_path = get_db_path(project_root)
             notif_cfg = proj_cfg.get("notifications", {})
             channel = notif_cfg.get("channel", "telegram")
+            scenario_payload = readiness.get("raw_scenario") or (desc_text if readiness.get("candidate_source_type") == "inline_markdown" else None)
             session = create_or_get_clarification_session(
                 db_path=db_path,
                 project_id=proj_cfg.get("project_id", project_root.name),
                 issue_key=issue_key,
-                raw_scenario=readiness.get("raw_scenario"),
+                raw_scenario=scenario_payload,
                 channel=channel
             )
 
-            # 2. Jika ada raw scenario, buat draf jika belum ada
-            if readiness.get("raw_scenario"):
-                draft_dir = project_root / tc_dir_rel / "drafts"
-                draft_dir.mkdir(parents=True, exist_ok=True)
-                draft_file = draft_dir / f"{issue_key}-scenario.md"
-                if not draft_file.exists():
-                    draft_file.write_text(
-                        f"# {issue_key}: Scenario from Jira\n\n"
-                        f"- **ID**: {issue_key}\n"
-                        f"- **Title**: {summary}\n"
-                        f"- **Type**: Positive\n"
-                        f"- **Execution Mode**: deterministic\n"
-                        f"- **Approval Status**: pending\n\n"
-                        f"## Raw QA Scenario\n{readiness['raw_scenario']}\n",
-                        encoding="utf-8"
-                    )
+            # 2. Buat berkas draf di test-cases/drafts/ untuk ditinjau manusia jika belum ada
+            draft_dir = project_root / tc_dir_rel / "drafts"
+            draft_dir.mkdir(parents=True, exist_ok=True)
+            draft_file = draft_dir / f"{issue_key}-scenario.md"
+
+            if readiness.get("candidate_source_type") == "inline_markdown" and not draft_file.exists():
+                draft_file.write_text(desc_text, encoding="utf-8")
+            elif readiness.get("raw_scenario") and not draft_file.exists():
+                draft_file.write_text(
+                    f"# {issue_key}: Scenario from Jira\n\n"
+                    f"- **ID**: {issue_key}\n"
+                    f"- **Title**: {summary}\n"
+                    f"- **Type**: Positive\n"
+                    f"- **Execution Mode**: deterministic\n"
+                    f"- **Approval Status**: pending\n\n"
+                    f"## Raw QA Scenario\n{readiness['raw_scenario']}\n",
+                    encoding="utf-8"
+                )
 
             # 3. Dispatch notifikasi klarifikasi ke channel yang dikonfigurasi
             if not no_publish:

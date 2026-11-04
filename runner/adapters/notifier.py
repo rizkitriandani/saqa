@@ -96,7 +96,7 @@ def format_clarification_message(issue_key: str, readiness: dict, session: dict)
             "",
             "❓ *Apakah ini test case yang ingin dijalankan?*",
             "Pilih opsi Anda:",
-            "1️⃣ Ketik *'Approve & Run'* (atau *'Ya'*) untuk mengesahkan dan menjalankan deskripsi ini langsung.",
+            "1️⃣ Balas *'Gunakan deskripsi ini'* untuk memuat langkah-langkah di atas.",
             "2️⃣ Salin / tempel teks skenario baru langsung di chat ini.",
             "3️⃣ Lampirkan berkas `.txt` atau `.md` kasus uji pada chat ini."
         ])

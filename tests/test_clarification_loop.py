@@ -286,7 +286,7 @@ class TestClarificationLoop(unittest.TestCase):
         msg = format_clarification_message("MED-900", mock_readiness, mock_session)
         self.assertIn("MED-900", msg)
         self.assertIn("Staff Authentication", msg)
-        self.assertIn("Approve & Run", msg)
+        self.assertIn("Gunakan deskripsi ini", msg)
         self.assertIn("Salin / tempel teks skenario baru", msg)
         self.assertIn("Lampirkan berkas", msg)
 
