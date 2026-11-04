@@ -227,17 +227,49 @@ class TestWebhookServer(unittest.TestCase):
             self.handler_class.runner_override = None
 
     def test_oversized_payload_rejected_413(self):
-        # Payload melebihi MAX_PAYLOAD_SIZE (1MB) wajib ditolak dengan 413
-        oversized_str = "x" * (1024 * 1024 + 50)
-        p = {"issue_key": "MED-103", "blob": oversized_str}
-        try:
-            status, body = self._post("/jira-webhook", p, headers={"X-Webhook-Secret": "super_secret_token_123"})
-            self.assertEqual(status, 413)
-        except urllib.error.HTTPError as e:
-            self.assertEqual(e.code, 413)
-        except urllib.error.URLError as e:
-            # Sisi server menutup koneksi setelah menerima header > 1MB
-            self.assertTrue("Broken pipe" in str(e) or "Connection reset" in str(e))
+        # Mengirim Content-Length melebihi MAX_PAYLOAD_SIZE (1MB) wajib ditolak dengan 413
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(1024 * 1024 + 100),
+            "X-Webhook-Secret": "super_secret_token_123"
+        }
+        conn.request("POST", "/jira-webhook", body=b"{}", headers=headers)
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 413)
+        data = json.loads(resp.read().decode("utf-8"))
+        self.assertIn("terlalu besar", data.get("error", ""))
+        conn.close()
+
+    def test_start_webhook_server_lock_prevents_duplicate_instance(self):
+        from runner.adapters.webhook_server import start_webhook_server
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_root = Path(tmpdir)
+            (proj_root / ".env").write_text("WEBHOOK_SECRET=secret123\n", encoding="utf-8")
+            (proj_root / "saqa.json").write_text(json.dumps({
+                "version": 1,
+                "project_id": "lock-proj",
+                "environment": {"base_url": "https://example.com"},
+                "input": {"source": "repo"},
+                "outputs": [{"type": "local"}]
+            }), encoding="utf-8")
+
+            # Ambil lock secara manual untuk mensimulasikan instance yang sedang berjalan
+            import fcntl
+            lock_file = proj_root / "artifacts" / "webhook.lock"
+            (proj_root / "artifacts").mkdir(parents=True, exist_ok=True)
+            fd = open(lock_file, "a+")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            try:
+                # Startup instance kedua pada proyek yang sama wajib ditolak fail-closed
+                with self.assertRaises(RuntimeError) as ctx:
+                    start_webhook_server(host="127.0.0.1", port=0, project_root=proj_root)
+                self.assertIn("sudah aktif berjalan", str(ctx.exception))
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                fd.close()
 
     def test_job_queue_atomic_claim_and_status_transitions(self):
         from runner.adapters.job_queue import (

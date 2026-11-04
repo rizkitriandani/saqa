@@ -348,17 +348,45 @@ def start_webhook_server(
     cfg = load_project_config(project_root)
     project_id = cfg.get("project_id", project_root.name)
 
-    # 1. Bind socket terlebih dahulu (fail-closed jika port bentrok atau dilarang)
+    # 1. Ambil exclusive lock file per proyek untuk mencegah dua server berjalan bersamaan di proyek yang sama
+    import fcntl
+    lock_dir = project_root / "artifacts"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / "webhook.lock"
+    lock_fd = open(lock_file, "a+")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        lock_fd.close()
+        raise RuntimeError(f"Server webhook untuk proyek '{project_id}' sudah aktif berjalan di proses lain.")
+
+    # 2. Definisikan handler terisolasi untuk instance server ini
+    class CustomHandler(SaqaWebhookHandler):
+        pass
+    CustomHandler.project_root = project_root
+    CustomHandler.runner_override = runner_override
+    CustomHandler.allow_unauthenticated = allow_unauthenticated
+
+    # 3. Bind socket (fail-closed jika port bentrok)
     server_address = (host, port)
-    httpd = HTTPServer(server_address, CustomHandler)
+    try:
+        httpd = HTTPServer(server_address, CustomHandler)
+    except Exception:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_fd.close()
+        raise
+
     logger.info(f"🌐 [SAQA Webhook Server] Socket berhasil di-bind di http://{host}:{port}/jira-webhook")
     logger.info(f"📁 Project Root: {project_root}")
     logger.info(f"⚙️  Default Runner: {runner_override or 'from saqa.json'}")
 
-    # 2. Rekonsiliasi job yang terinterupsi saat restart sebelumnya (hanya setelah socket berhasil di-bind)
+    # 4. Rekonsiliasi job yang terinterupsi saat restart sebelumnya (hanya setelah lock & socket aman)
     reconcile_interrupted_jobs_on_startup(db_path, project_id)
 
-    # 3. Jalankan background worker untuk memproses antrean SQLite
+    # 5. Jalankan background worker untuk memproses antrean SQLite
     _WORKER_STOP_EVENT.clear()
     _WORKER_THREAD = threading.Thread(target=queue_worker_loop, args=(project_root, _WORKER_STOP_EVENT), daemon=True)
     _WORKER_THREAD.start()
@@ -370,3 +398,8 @@ def start_webhook_server(
     finally:
         _WORKER_STOP_EVENT.set()
         httpd.server_close()
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_fd.close()

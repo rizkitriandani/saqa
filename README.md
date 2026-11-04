@@ -242,18 +242,28 @@ You have three runner options when Jira moves a card to `In Testing`:
 #### Option 1: Direct on your VPS / Hermes Server (Recommended - No GitHub Actions)
 Run SAQA's built-in lightweight webhook listener directly on your VPS:
 ```bash
-# Start webhook listener on port 8080 (runner: local by default)
+# Start webhook listener on port 8080 (binds to 127.0.0.1 by default)
 saqa webhook --port 8080 --runner local
 ```
-Then configure Jira Automation to send a POST request directly to your VPS:
-- **URL**: `http://<YOUR_VPS_IP_OR_DOMAIN>:8080/jira-webhook`
+> **Security & Production Deployment**:
+> - `WEBHOOK_SECRET` is required in `.env` (startup fails closed without it).
+> - In production, keep SAQA bound to `127.0.0.1` and expose it through an **HTTPS reverse proxy** (e.g. Nginx, Caddy, or Cloudflare Tunnel) with SSL termination.
+
+Configure Jira Automation to send a POST request:
+- **URL**: `https://<YOUR_VPS_DOMAIN>/jira-webhook`
 - **Method**: `POST`
-- **Headers**: `X-Webhook-Secret: <your_secret>` (optional token defined in `.env`)
+- **Headers**:
+  - `Content-Type`: `application/json`
+  - `X-Webhook-Secret`: `<your_secret_from_env>`
 - **Body**: Custom JSON:
   ```json
-  { "issue_key": "{{issue.key}}", "status": "{{issue.status.name}}" }
+  {
+    "event_id": "{{webhookEventId}}",
+    "issue_key": "{{issue.key}}",
+    "status": "{{issue.status.name}}"
+  }
   ```
-The VPS listener immediately returns `202 Accepted` and executes Playwright locally on the VPS, uploading reports and videos directly to Jira.
+The VPS listener validates the timing-safe secret, enqueues the job into an atomic SQLite durable queue, immediately returns `202 Accepted` to Jira, and executes Playwright in a background worker on your VPS. Reports and videos are attached directly back to the Jira ticket.
 
 #### Option 2: Serverless via GitHub Actions
 See **[`docs/jira-automation-setup.md`](docs/jira-automation-setup.md)** for configuring Jira Automation to trigger `.github/workflows/saqa-jira.yml` via `repository_dispatch`.
