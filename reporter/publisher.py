@@ -1,21 +1,17 @@
 import os
 import json
 from pathlib import Path
+from runner.config import load_project_config, load_project_env
 
-def publish_artifacts(run_id: str, force: bool = False) -> dict:
+def publish_artifacts(run_id: str, force: bool = False, project_root: Path = None) -> dict:
     repo_root = Path(__file__).resolve().parent.parent
-    
-    # Load env if needed
-    env_file = repo_root / ".env"
-    if env_file.exists():
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    k, v = k.strip(), v.strip().strip("'\"")
-                    if k not in os.environ:
-                        os.environ[k] = v
+    if project_root is None:
+        project_root = Path.cwd()
+    project_root = Path(project_root).resolve()
+
+    # Memuat konfigurasi dan environment proyek
+    proj_cfg = load_project_config(project_root)
+    env_vars = load_project_env(project_root)
 
     # Security: Sanitasi run_id agar terbebas dari path traversal
     safe_run_id = Path(run_id).name
@@ -26,18 +22,35 @@ def publish_artifacts(run_id: str, force: bool = False) -> dict:
             "message": "Parameter run_id tidak valid."
         }
 
-    run_dir = repo_root / "artifacts" / safe_run_id
+    run_dir = project_root / "artifacts" / safe_run_id
     metadata_path = run_dir / "metadata.json"
 
     if not metadata_path.exists():
         return {
             "published": False,
             "reason": "RUN_NOT_FOUND",
-            "message": f"Run ID {run_id} tidak ditemukan di artifacts/"
+            "message": f"Run ID {run_id} tidak ditemukan di artifacts/ pada {project_root}"
         }
 
     with open(metadata_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
+
+    # Cek apakah Google Drive dikonfigurasi sebagai output sink pada proyek ini
+    gdrive_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "google_drive"]
+    if not gdrive_outputs:
+        status_info = {
+            "published": True,
+            "status": "LOCAL_ONLY",
+            "message": f"Proyek '{proj_cfg.get('project_id')}' hanya dikonfigurasi dengan output 'local'. Publikasi Google Drive dilewati."
+        }
+        meta["publish_status"] = status_info
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        return status_info
+
+    gdrive_cfg = gdrive_outputs[0]
+    folder_var = gdrive_cfg.get("folder_id_env", "GOOGLE_DRIVE_FOLDER_ID")
+    cred_var = gdrive_cfg.get("credentials_env", "GOOGLE_APPLICATION_CREDENTIALS")
 
     # Idempotency check: jika sudah berhasil dipublikasikan dan sudah memiliki folder run (serta bukan mode force), kembalikan status tersimpan
     pub_status = meta.get("publish_status", {})
@@ -47,9 +60,13 @@ def publish_artifacts(run_id: str, force: bool = False) -> dict:
     docx_path = run_dir / "report.docx"
     video_path = run_dir / "evidence.webm"
 
-    cred_path_str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials/service-account.json")
-    cred_path = repo_root / cred_path_str if not os.path.isabs(cred_path_str) else Path(cred_path_str)
-    parent_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+    cred_path_str = env_vars.get(cred_var, os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials/service-account.json"))
+    cred_path = project_root / cred_path_str if not os.path.isabs(cred_path_str) else Path(cred_path_str)
+    # Jika tidak ada di project_root, coba fallback ke repo_root
+    if not cred_path.exists() and (repo_root / cred_path_str).exists():
+        cred_path = repo_root / cred_path_str
+
+    parent_folder_id = env_vars.get(folder_var, os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
 
     if not parent_folder_id or not cred_path.exists():
         status_info = {
@@ -57,9 +74,9 @@ def publish_artifacts(run_id: str, force: bool = False) -> dict:
             "status": "UNPUBLISHED",
             "reason": "AWAITING_GOOGLE_DRIVE_CREDENTIALS",
             "message": (
-                "File kredensial Google Service Account atau GOOGLE_DRIVE_FOLDER_ID belum disetel di .env.\n"
-                f"Laporan lokal aman tersimpan di: {docx_path.relative_to(repo_root) if docx_path.exists() else 'Belum dibuat'}\n"
-                f"Video rekaman tersimpan di: {video_path.relative_to(repo_root) if video_path.exists() else 'None'}"
+                f"File kredensial Google Service Account ({cred_path}) atau {folder_var} belum disetel di .env.\n"
+                f"Laporan lokal aman tersimpan di: {docx_path.relative_to(project_root) if docx_path.exists() else 'Belum dibuat'}\n"
+                f"Video rekaman tersimpan di: {video_path.relative_to(project_root) if video_path.exists() else 'None'}"
             ),
             "local_docx": str(docx_path) if docx_path.exists() else None,
             "local_video": str(video_path) if video_path.exists() else None

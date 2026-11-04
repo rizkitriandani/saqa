@@ -17,6 +17,7 @@ from runner.parser import (
     compile_expected_results,
     ALLOWED_ENV_VARS
 )
+from runner.config import load_project_config, load_project_env
 
 def get_allowed_origins(dev_base_url: str) -> set:
     """Mengembalikan daftar origin tepercaya yang diizinkan untuk navigasi browser."""
@@ -224,17 +225,22 @@ def preflight_validate(parsed_tc: dict, env_vars: dict, allowed_origins: set) ->
 
     return errors
 
-def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> dict:
-    repo_root = Path(__file__).resolve().parent.parent
-    env_vars = load_env(repo_root / ".env")
+def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md", project_root: Path = None) -> dict:
+    if project_root is None:
+        project_root = Path.cwd()
+    project_root = Path(project_root).resolve()
 
-    tc_path = repo_root / test_case_file if not os.path.isabs(test_case_file) else Path(test_case_file)
+    # Memuat konfigurasi dan environment proyek aktif secara terisolasi
+    proj_cfg = load_project_config(project_root)
+    env_vars = load_project_env(project_root)
+
+    tc_path = project_root / test_case_file if not os.path.isabs(test_case_file) else Path(test_case_file)
     parsed_tc = parse_markdown_test_case(tc_path)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     uid_suffix = uuid.uuid4().hex[:8]
     run_id = f"RUN_{timestamp}_{uid_suffix}"
-    run_dir = repo_root / "artifacts" / run_id
+    run_dir = project_root / "artifacts" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     video_dir = run_dir / "raw_video"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +258,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
 
     metadata = {
         "run_id": run_id,
+        "project_id": proj_cfg.get("project_id", project_root.name),
         "test_case_id": parsed_tc["id"],
         "title": parsed_tc["title"],
         "timestamp": datetime.now().isoformat(),
@@ -267,7 +274,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
         "artifacts": {
             "screenshots": [],
             "video": None,
-            "snapshot": str(snapshot_path.relative_to(repo_root))
+            "snapshot": str(snapshot_path.relative_to(project_root))
         }
     }
 
@@ -305,8 +312,9 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
             json.dump(metadata, f, indent=2)
         return metadata
 
-    dev_base_url = env_vars.get("DEV_BASE_URL", os.environ.get("DEV_BASE_URL", ""))
-    allowed_origins = get_allowed_origins(dev_base_url)
+    dev_base_url = proj_cfg.get("environment", {}).get("base_url") or env_vars.get("DEV_BASE_URL", "")
+    configured_origins = set(proj_cfg.get("environment", {}).get("allowed_origins", []))
+    allowed_origins = get_allowed_origins(dev_base_url) | configured_origins
 
     # 3. Preflight Check Sebelum Browser Diluncurkan
     preflight_errors = preflight_validate(parsed_tc, env_vars, allowed_origins)
@@ -350,7 +358,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                     "step_number": step_num,
                     "action": f"{action} -> {target}",
                     "status": "COMPLETED",
-                    "screenshot": str(sc_path.relative_to(repo_root)),
+                    "screenshot": str(sc_path.relative_to(project_root)),
                     "notes": outcome or f"URL: {page.url}"
                 }
                 metadata["steps"].append(step_info)
@@ -446,7 +454,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
         final_video_path = run_dir / "evidence.webm"
         shutil.move(str(video_files[0]), str(final_video_path))
         shutil.rmtree(video_dir, ignore_errors=True)
-        metadata["artifacts"]["video"] = str(final_video_path.relative_to(repo_root))
+        metadata["artifacts"]["video"] = str(final_video_path.relative_to(project_root))
 
     meta_file = run_dir / "metadata.json"
     with open(meta_file, "w", encoding="utf-8") as f:
