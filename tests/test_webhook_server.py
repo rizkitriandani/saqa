@@ -154,55 +154,70 @@ class TestWebhookServer(unittest.TestCase):
         self.assertEqual(body["status"], "skipped")
         self.assertIn("Backlog", body["reason"])
 
-    @patch("runner.adapters.webhook_server.threading.Thread")
-    def test_local_runner_dispatch_accepted(self, mock_thread):
+    def test_local_runner_dispatch_accepted(self):
         status, body = self._post(
             "/jira-webhook",
-            {"issue_key": "MED-101", "status": "In Testing"},
+            {"issue_key": "MED-101", "status": "In Testing", "event_id": "evt_local_01"},
             headers={"X-Webhook-Secret": "super_secret_token_123"}
         )
         self.assertEqual(status, 202)
         self.assertEqual(body["status"], "accepted")
         self.assertEqual(body["runner"], "local")
-        mock_thread.assert_called_once()
+        self.assertIn("job_id", body)
 
-    @patch("runner.adapters.webhook_server.dispatch_github_actions")
-    def test_github_runner_dispatch_accepted(self, mock_dispatch):
-        mock_dispatch.return_value = {"status": "dispatched", "target": "github", "code": 204}
+    def test_duplicate_event_id_detected_and_skipped(self):
+        # Mengirim event_id yang sama persis kedua kalinya wajib diskip secara idempoten
+        p = {"issue_key": "MED-102", "status": "In Testing", "event_id": "evt_dedup_01"}
+        s1, b1 = self._post("/jira-webhook", p, headers={"X-Webhook-Secret": "super_secret_token_123"})
+        self.assertEqual(s1, 202)
 
+        s2, b2 = self._post("/jira-webhook", p, headers={"X-Webhook-Secret": "super_secret_token_123"})
+        self.assertEqual(s2, 200)
+        self.assertEqual(b2["status"], "duplicate_event")
+        self.assertEqual(b2["event_id"], "evt_dedup_01")
+
+    def test_github_runner_dispatch_accepted(self, mock_dispatch=None):
         # Set runner override ke github pada handler server
         self.handler_class.runner_override = "github"
         try:
             status, body = self._post(
                 "/jira-webhook",
-                {"issue_key": "MED-101", "status": "In Testing"},
+                {"issue_key": "MED-201", "status": "In Testing", "event_id": "evt_gh_01"},
                 headers={"X-Webhook-Secret": "super_secret_token_123"}
             )
             self.assertEqual(status, 202)
-            self.assertEqual(body["status"], "dispatched")
+            self.assertEqual(body["status"], "accepted")
             self.assertEqual(body["runner"], "github")
-            mock_dispatch.assert_called_once()
         finally:
             self.handler_class.runner_override = None
 
-    @patch("runner.adapters.webhook_server.dispatch_gitlab_ci")
-    def test_gitlab_runner_dispatch_accepted(self, mock_dispatch):
-        mock_dispatch.return_value = {"status": "dispatched", "target": "gitlab", "code": 201}
-
+    def test_gitlab_runner_dispatch_accepted(self, mock_dispatch=None):
         # Set runner override ke gitlab pada handler server
         self.handler_class.runner_override = "gitlab"
         try:
             status, body = self._post(
                 "/jira-webhook",
-                {"issue_key": "MED-101", "status": "In Testing"},
+                {"issue_key": "MED-301", "status": "In Testing", "event_id": "evt_gl_01"},
                 headers={"X-Webhook-Secret": "super_secret_token_123"}
             )
             self.assertEqual(status, 202)
-            self.assertEqual(body["status"], "dispatched")
+            self.assertEqual(body["status"], "accepted")
             self.assertEqual(body["runner"], "gitlab")
-            mock_dispatch.assert_called_once()
         finally:
             self.handler_class.runner_override = None
+
+    def test_oversized_payload_rejected_413(self):
+        # Payload melebihi MAX_PAYLOAD_SIZE (1MB) wajib ditolak dengan 413
+        oversized_str = "x" * (1024 * 1024 + 50)
+        p = {"issue_key": "MED-103", "blob": oversized_str}
+        try:
+            status, body = self._post("/jira-webhook", p, headers={"X-Webhook-Secret": "super_secret_token_123"})
+            self.assertEqual(status, 413)
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 413)
+        except urllib.error.URLError as e:
+            # Sisi server menutup koneksi setelah menerima header > 1MB
+            self.assertTrue("Broken pipe" in str(e) or "Connection reset" in str(e))
 
 if __name__ == "__main__":
     unittest.main()

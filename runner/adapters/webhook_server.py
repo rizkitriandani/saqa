@@ -1,21 +1,31 @@
 import os
 import re
 import json
+import hmac
+import hashlib
 import logging
 import threading
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional
 
 from runner.config import load_project_config, load_project_env
+from runner.adapters.job_queue import (
+    get_db_path,
+    enqueue_job,
+    has_active_job_for_issue,
+    mark_job_status,
+    get_next_pending_job
+)
 
 logger = logging.getLogger("saqa.webhook")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-_ACTIVE_LOCK = threading.Lock()
-_ACTIVE_ISSUES: Set[str] = set()
+MAX_PAYLOAD_SIZE = 1024 * 1024  # 1 MiB max
+_WORKER_THREAD: Optional[threading.Thread] = None
+_WORKER_STOP_EVENT = threading.Event()
 
 def extract_issue_key_from_payload(payload: dict) -> Optional[str]:
     """
@@ -46,6 +56,19 @@ def extract_status_from_payload(payload: dict) -> Optional[str]:
         if s and isinstance(s, str):
             return s.strip()
     return None
+
+def extract_event_id_from_payload(payload: dict, raw_body: bytes) -> str:
+    """Mengekstrak event_id dari payload atau menghasilkan hash kanonikal dari body jika tidak disediakan."""
+    candidates = [
+        payload.get("event_id"),
+        payload.get("timestamp"),
+        payload.get("webhookEventId"),
+    ]
+    for eid in candidates:
+        if eid:
+            return str(eid).strip()
+    # Fallback deterministik: hash dari payload body
+    return hashlib.sha256(raw_body).hexdigest()[:32]
 
 def dispatch_github_actions(issue_key: str, env_vars: dict) -> Dict[str, Any]:
     """Memicu repository_dispatch pada GitHub Actions."""
@@ -104,28 +127,63 @@ def dispatch_gitlab_ci(issue_key: str, env_vars: dict) -> Dict[str, Any]:
     with urllib.request.urlopen(req, timeout=15) as resp:
         return {"status": "dispatched", "target": "gitlab", "code": resp.status}
 
-def run_local_jira_worker(issue_key: str, project_root: Path):
-    """Menjalankan engine pengujian secara lokal di background worker."""
-    with _ACTIVE_LOCK:
-        _ACTIVE_ISSUES.add(issue_key)
+def process_job_execution(job: dict, project_root: Path):
+    """Mengeksekusi satu pekerjaan dari antrean secara terisolasi."""
+    db_path = get_db_path(project_root)
+    job_id = job["id"]
+    issue_key = job["issue_key"]
+    runner = job["runner_target"]
+    env_vars = load_project_env(project_root)
 
-    logger.info(f"🚀 [Worker] Memulai eksekusi lokal untuk tiket Jira: {issue_key}")
+    mark_job_status(db_path, job_id, "RUNNING")
+    logger.info(f"🚀 [Worker] Memproses Job #{job_id} ({issue_key}) via {runner}...")
+
     try:
-        from cli import cmd_jira_process
-        import argparse
-        args = argparse.Namespace(issue_key=issue_key, project_root=str(project_root), no_publish=False)
-        cmd_jira_process(args)
+        if runner == "local":
+            from cli import cmd_jira_process
+            import argparse
+            args = argparse.Namespace(issue_key=issue_key, project_root=str(project_root), no_publish=False)
+            ret = cmd_jira_process(args)
+            if ret == 0:
+                mark_job_status(db_path, job_id, "COMPLETED")
+                logger.info(f"✅ [Worker] Job #{job_id} ({issue_key}) selesai sukses.")
+            else:
+                mark_job_status(db_path, job_id, "FAILED", error_message="Eksekusi return code non-zero.")
+                logger.warning(f"⚠️ [Worker] Job #{job_id} ({issue_key}) selesai dengan status FAILED.")
+        elif runner == "github":
+            dispatch_github_actions(issue_key, env_vars)
+            mark_job_status(db_path, job_id, "COMPLETED")
+            logger.info(f"✅ [Worker] Job #{job_id} dispatched ke GitHub Actions.")
+        elif runner == "gitlab":
+            dispatch_gitlab_ci(issue_key, env_vars)
+            mark_job_status(db_path, job_id, "COMPLETED")
+            logger.info(f"✅ [Worker] Job #{job_id} dispatched ke GitLab CI.")
     except Exception as e:
-        logger.error(f"❌ [Worker] Error saat memproses {issue_key}: {str(e)}")
-    finally:
-        with _ACTIVE_LOCK:
-            _ACTIVE_ISSUES.discard(issue_key)
-        logger.info(f"🏁 [Worker] Selesai memproses tiket {issue_key}.")
+        logger.error(f"❌ [Worker] Job #{job_id} ({issue_key}) error: {str(e)}")
+        mark_job_status(db_path, job_id, "NEEDS_RECONCILIATION", error_message=str(e))
+
+def queue_worker_loop(project_root: Path, stop_event: threading.Event):
+    """Loop worker latar belakang yang memproses antrean SQLite secara serial."""
+    db_path = get_db_path(project_root)
+    cfg = load_project_config(project_root)
+    project_id = cfg.get("project_id", project_root.name)
+
+    while not stop_event.is_set():
+        try:
+            job = get_next_pending_job(db_path, project_id)
+            if job:
+                process_job_execution(job, project_root)
+            else:
+                stop_event.wait(timeout=1.0)
+        except Exception as e:
+            logger.error(f"Worker queue loop error: {e}")
+            stop_event.wait(timeout=2.0)
 
 
 class SaqaWebhookHandler(BaseHTTPRequestHandler):
     project_root: Path = Path.cwd()
     runner_override: Optional[str] = None
+    allow_unauthenticated: bool = False
 
     def _send_json(self, status_code: int, data: dict):
         resp_bytes = json.dumps(data, indent=2).encode("utf-8")
@@ -139,14 +197,11 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
         if self.path in ["/health", "/"]:
             cfg = load_project_config(self.project_root)
             runner = self.runner_override or cfg.get("runner_target", "local")
-            with _ACTIVE_LOCK:
-                active_count = len(_ACTIVE_ISSUES)
             self._send_json(200, {
                 "status": "ok",
                 "service": "saqa-webhook-receiver",
                 "project_id": cfg.get("project_id"),
                 "runner_target": runner,
-                "active_jobs": active_count
             })
         else:
             self._send_json(404, {"error": "Not Found"})
@@ -158,28 +213,49 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
 
         cfg = load_project_config(self.project_root)
         env_vars = load_project_env(self.project_root)
+        project_id = cfg.get("project_id", self.project_root.name)
+        db_path = get_db_path(self.project_root)
 
-        # 1. Verifikasi secret token jika disetel (WEBHOOK_SECRET)
+        # 1. Autentikasi Secret Token (Timing-Safe & Fail-Closed)
         expected_secret = env_vars.get("WEBHOOK_SECRET", "").strip()
+        if not expected_secret and not self.allow_unauthenticated:
+            logger.error("Konfigurasi server tidak aman: WEBHOOK_SECRET belum disetel di .env.")
+            self._send_json(500, {
+                "error": "Server Configuration Error: WEBHOOK_SECRET wajib disetel di .env untuk mengamankan webhook."
+            })
+            return
+
         if expected_secret:
             incoming_secret = self.headers.get("X-Webhook-Secret", "").strip()
             auth_header = self.headers.get("Authorization", "").strip()
             if not incoming_secret and auth_header.startswith("Bearer "):
                 incoming_secret = auth_header.split("Bearer ", 1)[1].strip()
 
-            if incoming_secret != expected_secret:
+            # Timing-safe comparison
+            if not hmac.compare_digest(incoming_secret.encode("utf-8"), expected_secret.encode("utf-8")):
                 logger.warning("Permintaan ditolak: Secret token tidak cocok.")
                 self._send_json(401, {"error": "Unauthorized: Webhook secret invalid."})
                 return
 
-        # 2. Baca body JSON
+        # 2. Batas ukuran payload (Max 1 MiB)
         try:
             content_len = int(self.headers.get("Content-Length", 0))
             if content_len == 0:
                 self._send_json(400, {"error": "Body JSON kosong."})
                 return
+            if content_len > MAX_PAYLOAD_SIZE:
+                try:
+                    self.rfile.read(min(content_len, 65536))
+                except Exception:
+                    pass
+                self._send_json(413, {"error": f"Payload terlalu besar (maksimal {MAX_PAYLOAD_SIZE} bytes)."})
+                return
+
             body_bytes = self.rfile.read(content_len)
             payload = json.loads(body_bytes.decode("utf-8"))
+            if not isinstance(payload, dict):
+                self._send_json(400, {"error": "Format payload wajib berupa JSON Object."})
+                return
         except Exception as e:
             self._send_json(400, {"error": f"Payload bukan JSON valid: {str(e)}"})
             return
@@ -212,62 +288,54 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-        # 6. Cek deduplikasi in-flight
-        with _ACTIVE_LOCK:
-            if issue_key in _ACTIVE_ISSUES:
-                logger.info(f"Tiket {issue_key} sedang berjalan saat ini. Mengabaikan event duplikat.")
-                self._send_json(200, {
-                    "status": "already_running",
-                    "issue_key": issue_key,
-                    "message": "Pengujian untuk tiket ini sedang berlangsung."
-                })
-                return
-
-        # 7. Tentukan Runner Target (local, github, gitlab)
+        # 6. Tentukan Runner Target & Enqueue Job secara Durable
         runner = self.runner_override or cfg.get("runner_target", "local")
+        event_id = extract_event_id_from_payload(payload, body_bytes)
 
-        logger.info(f"📥 Menerima event Jira untuk {issue_key}. Target Runner: {runner}")
-
-        if runner == "local":
-            # Jalankan worker di background thread agar response HTTP 202 langsung kembali ke Jira
-            t = threading.Thread(target=run_local_jira_worker, args=(issue_key, self.project_root), daemon=True)
-            t.start()
-            self._send_json(202, {
-                "status": "accepted",
+        # Cek deduplikasi event ID terlebih dahulu
+        job_id, is_duplicate = enqueue_job(db_path, project_id, event_id, issue_key, runner)
+        if is_duplicate:
+            logger.info(f"Event ID {event_id} sudah pernah tercatat sebelumnya. Mengabaikan event duplikat.")
+            self._send_json(200, {
+                "status": "duplicate_event",
+                "event_id": event_id,
                 "issue_key": issue_key,
-                "runner": "local",
-                "message": "Pengujian diterima dan sedang dieksekusi di server lokal."
+                "message": "Event ID ini sudah pernah diproses."
             })
-        elif runner == "github":
-            try:
-                res_gh = dispatch_github_actions(issue_key, env_vars)
-                self._send_json(202, {
-                    "status": "dispatched",
-                    "issue_key": issue_key,
-                    "runner": "github",
-                    "dispatch_response": res_gh
-                })
-            except Exception as e_gh:
-                logger.error(f"Gagal memicu GitHub Actions: {e_gh}")
-                self._send_json(500, {"error": f"Gagal dispatch ke GitHub Actions: {str(e_gh)}"})
-        elif runner == "gitlab":
-            try:
-                res_gl = dispatch_gitlab_ci(issue_key, env_vars)
-                self._send_json(202, {
-                    "status": "dispatched",
-                    "issue_key": issue_key,
-                    "runner": "gitlab",
-                    "dispatch_response": res_gl
-                })
-            except Exception as e_gl:
-                logger.error(f"Gagal memicu GitLab CI: {e_gl}")
-                self._send_json(500, {"error": f"Gagal dispatch ke GitLab CI: {str(e_gl)}"})
-        else:
-            self._send_json(400, {"error": f"Runner target '{runner}' tidak didukung."})
+            return
+
+        # 7. Cek apakah tiket ini sudah memiliki eksekusi lain yang aktif
+        if has_active_job_for_issue(db_path, project_id, issue_key, exclude_event_id=event_id):
+            logger.info(f"Tiket {issue_key} sudah memiliki job aktif lain dalam antrean. Menandai SKIPPED.")
+            mark_job_status(db_path, job_id, "SKIPPED", error_message="Tiket sedang diproses oleh job lain.")
+            self._send_json(200, {
+                "status": "already_queued",
+                "job_id": job_id,
+                "issue_key": issue_key,
+                "message": "Pengujian untuk tiket ini sudah berada dalam antrean atau sedang berjalan."
+            })
+            return
+
+        logger.info(f"📥 Enqueued Job #{job_id} untuk {issue_key} via {runner}. Mengembalikan HTTP 202.")
+        self._send_json(202, {
+            "status": "accepted",
+            "job_id": job_id,
+            "issue_key": issue_key,
+            "runner": runner,
+            "message": "Pekerjaan pengujian berhasil disimpan di antrean durable."
+        })
 
 
-def start_webhook_server(host: str = "0.0.0.0", port: int = 8080, project_root: Path = None, runner_override: Optional[str] = None):
-    """Menjalankan server webhook HTTP."""
+def start_webhook_server(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    project_root: Path = None,
+    runner_override: Optional[str] = None,
+    allow_unauthenticated: bool = False
+):
+    """Menjalankan server webhook HTTP dengan worker antrean durable SQLite."""
+    global _WORKER_THREAD, _WORKER_STOP_EVENT
+
     if project_root is None:
         project_root = Path.cwd()
     project_root = Path(project_root).resolve()
@@ -276,6 +344,12 @@ def start_webhook_server(host: str = "0.0.0.0", port: int = 8080, project_root: 
         pass
     CustomHandler.project_root = project_root
     CustomHandler.runner_override = runner_override
+    CustomHandler.allow_unauthenticated = allow_unauthenticated
+
+    # Jalankan background worker untuk memproses antrean SQLite
+    _WORKER_STOP_EVENT.clear()
+    _WORKER_THREAD = threading.Thread(target=queue_worker_loop, args=(project_root, _WORKER_STOP_EVENT), daemon=True)
+    _WORKER_THREAD.start()
 
     server_address = (host, port)
     httpd = HTTPServer(server_address, CustomHandler)
@@ -287,4 +361,5 @@ def start_webhook_server(host: str = "0.0.0.0", port: int = 8080, project_root: 
     except KeyboardInterrupt:
         logger.info("\nServer webhook dihentikan.")
     finally:
+        _WORKER_STOP_EVENT.set()
         httpd.server_close()

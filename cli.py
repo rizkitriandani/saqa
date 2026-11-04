@@ -502,7 +502,14 @@ def cmd_webhook(args):
     host = args.host
     port = args.port
     runner = args.runner
-    start_webhook_server(host=host, port=port, project_root=project_root, runner_override=runner)
+    allow_unauth = getattr(args, "allow_unauthenticated", False)
+    start_webhook_server(
+        host=host,
+        port=port,
+        project_root=project_root,
+        runner_override=runner,
+        allow_unauthenticated=allow_unauth
+    )
     return 0
 
 def main():
@@ -569,9 +576,10 @@ def main():
 
     # Subcommand: webhook
     parser_wh = subparsers.add_parser("webhook", parents=[common_parser], help="Jalankan Webhook Receiver Server (VPS listener)")
-    parser_wh.add_argument("--host", default="0.0.0.0", help="Host bind address (default: 0.0.0.0)")
+    parser_wh.add_argument("--host", default="127.0.0.1", help="Host bind address (default: 127.0.0.1; gunakan reverse proxy HTTPS)")
     parser_wh.add_argument("--port", type=int, default=8080, help="Port server (default: 8080)")
     parser_wh.add_argument("--runner", choices=["local", "github", "gitlab"], default=None, help="Pilihan runner: local (default), github, atau gitlab")
+    parser_wh.add_argument("--allow-unauthenticated", action="store_true", help="Izinkan menjalankan server tanpa WEBHOOK_SECRET (hanya untuk pengujian lokal)")
     parser_wh.set_defaults(func=cmd_webhook)
 
     args = parser.parse_args()

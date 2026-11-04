@@ -14,7 +14,7 @@ def load_project_env(project_root: Path) -> Dict[str, str]:
     """
     Membaca variabel lingkungan dari .env proyek ke dictionary terisolasi.
     Tidak melakukan mutasi global pada os.environ agar Proyek A tidak mencemari Proyek B.
-    Prioritas: Nilai dari os.environ sistem tetap dihormati jika sudah ada.
+    Nilai di dalam .env proyek diprioritaskan; os.environ sistem hanya sebagai fallback untuk key yang belum ada.
     """
     env_vars: Dict[str, str] = {}
     env_file = project_root / ".env"
@@ -29,10 +29,10 @@ def load_project_env(project_root: Path) -> Dict[str, str]:
                 v = v.strip().strip("'\"")
                 env_vars[k] = v
 
-    # Variabel sistem yang sudah diset memiliki prioritas
-    for k in list(env_vars.keys()):
-        if k in os.environ:
-            env_vars[k] = os.environ[k]
+    # os.environ sistem bertindak sebagai fallback untuk key yang belum ada di .env
+    for k, v in os.environ.items():
+        if k not in env_vars:
+            env_vars[k] = v
 
     return env_vars
 
