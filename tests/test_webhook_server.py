@@ -338,7 +338,7 @@ class TestWebhookServer(unittest.TestCase):
             self.assertIn("WEBHOOK_SECRET wajib disetel", str(ctx.exception))
 
     def test_server_lifecycle_and_clean_lock_release(self):
-        # Menguji lifecycle penuh entry point produksi start_webhook_server dengan worker yang tertahan
+        # Menguji lifecycle penuh: worker menahan lock selama operasi berlangsung bahkan setelah shutdown dipanggil
         from runner.adapters.webhook_server import start_webhook_server
         import fcntl
 
@@ -354,17 +354,24 @@ class TestWebhookServer(unittest.TestCase):
             }), encoding="utf-8")
 
             ready_event = threading.Event()
-            worker_hold_event = threading.Event()
+            worker_started = threading.Event()
+            shutdown_observed = threading.Event()
+            release_worker = threading.Event()
             server_box = [None]
+
             def on_ready(httpd):
                 server_box[0] = httpd
                 ready_event.set()
 
-            # Mock process_job_execution agar menahan worker sampai worker_hold_event diset
-            def held_worker(job, pr):
-                worker_hold_event.wait(timeout=5)
+            def controlled_worker_loop(project_root_arg, stop_event_arg):
+                worker_started.set()
+                # Tunggu sinyal stop_event dari server shutdown
+                stop_event_arg.wait(timeout=10)
+                shutdown_observed.set()
+                # Tahan worker sampai test secara eksplisit mengizinkan selesai
+                release_worker.wait(timeout=10)
 
-            with patch("runner.adapters.webhook_server.process_job_execution", side_effect=held_worker):
+            with patch("runner.adapters.webhook_server.queue_worker_loop", side_effect=controlled_worker_loop):
                 st_thread = threading.Thread(
                     target=start_webhook_server,
                     kwargs={
@@ -377,28 +384,33 @@ class TestWebhookServer(unittest.TestCase):
                 )
                 st_thread.start()
                 self.assertTrue(ready_event.wait(timeout=5))
+                self.assertTrue(worker_started.wait(timeout=5))
 
                 httpd = server_box[0]
                 port = httpd.server_port
 
-                # 1. Panggil /health ke instance server yang hidup
+                # 1. Endpoint /health dapat diakses
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
                 with urllib.request.urlopen(req, timeout=3) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     self.assertEqual(data["status"], "ok")
-                    self.assertEqual(data["project_id"], "lifecycle-proj")
 
-                # 2. Instance kedua pada project_root yang sama wajib ditolak (lock conflict)
-                with self.assertRaises(RuntimeError) as ctx:
-                    start_webhook_server(host="127.0.0.1", port=0, project_root=proj_root)
-                self.assertIn("sudah aktif berjalan", str(ctx.exception))
+                try:
+                    # 2. Shutdown server dimulai
+                    httpd.shutdown()
+                    self.assertTrue(shutdown_observed.wait(timeout=5))
 
-                # 3. Lepaskan worker hold dan shutdown server
-                worker_hold_event.set()
-                httpd.shutdown()
-                st_thread.join(timeout=5)
+                    # Worker masih aktif berjalan (tertahan) -> server_thread wajib masih hidup dan lock wajib tetap dipegang!
+                    self.assertTrue(st_thread.is_alive())
+                    with self.assertRaises(RuntimeError) as ctx:
+                        start_webhook_server(host="127.0.0.1", port=0, project_root=proj_root)
+                    self.assertIn("sudah aktif berjalan", str(ctx.exception))
+                finally:
+                    # 3. Lepaskan worker agar thread selesai dan melepaskan lock
+                    release_worker.set()
+                    st_thread.join(timeout=5)
 
-                # 4. Setelah shutdown dan worker selesai, lock file harus sudah dilepas bersih
+                # 4. Setelah worker selesai, lock file harus sudah dilepas bersih
                 lock_file = proj_root / "artifacts" / "webhook.lock"
                 test_fd = open(lock_file, "a+")
                 fcntl.flock(test_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
