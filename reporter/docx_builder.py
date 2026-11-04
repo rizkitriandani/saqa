@@ -102,11 +102,17 @@ def build_docx_report(metadata_path: Path, drive_video_url: str = None, project_
 
     # Evaluasi Hasil
     doc.add_heading("2. Hasil Evaluasi & Asersi", level=1)
-    doc.add_paragraph(f"Hasil yang Diharapkan: Pengguna berhasil login dan diarahkan ke dashboard Managed Care.")
     p_actual = doc.add_paragraph(f"Hasil Aktual: {meta.get('actual_result', '-')}")
     if meta.get("error_message"):
         p_err = doc.add_paragraph(f"Pesan Error: {meta.get('error_message')}")
         p_err.runs[0].font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+
+    if meta.get("ai_diagnosis"):
+        doc.add_heading("Analisis Akar Masalah AI (AI Root-Cause Diagnosis)", level=2)
+        p_diag = doc.add_paragraph()
+        run_diag = p_diag.add_run(meta["ai_diagnosis"])
+        run_diag.font.italic = True
+        run_diag.font.color.rgb = RGBColor(0x15, 0x65, 0xC0) # Deep Blue
 
     # Bukti Visual & Langkah
     doc.add_heading("3. Langkah Eksekusi & Bukti Visual", level=1)

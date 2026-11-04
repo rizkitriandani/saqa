@@ -93,6 +93,12 @@ Ketika pengguna meminta menguji sebuah alur (misal: *"Tolong buatkan test login 
 Tanyakan kepada operator manusia:
 > *"Draf kasus uji `test-cases/TC-xxx.md` telah dibuat dengan status `pending`. Apakah langkah dan kriteria di atas sudah sesuai? Jika setuju, jalankan `python3 cli.py approve test-cases/TC-xxx.md` untuk mengesahkannya."*
 
+Jika pengguna meminta audit/cross-check terlebih dahulu:
+1. Periksa kelogisan alur: Apakah langkah prasyarat masuk akal?
+2. Periksa selektor: Apakah target ambigu atau terlalu umum?
+3. Periksa asersi: Apakah kriteria hasil memenuhi gramar mesin baku (`url contains`, `heading contains`, `text contains`, `element is visible`)?
+4. Berikan saran perbaikan dan perbarui berkas kasus uji agar siap disetujui.
+
 Jika pengguna memberikan konfirmasi verbal setuju, agen dapat mengeksekusi perintah persetujuan:
 ```bash
 python3 cli.py approve test-cases/TC-xxx.md
@@ -102,16 +108,29 @@ python3 cli.py approve test-cases/TC-xxx.md
 ### Langkah 3: Eksekusi Pengujian
 Jalankan pengujian menggunakan CLI runner:
 ```bash
-python3 cli.py run test-cases/TC-xxx.md
+python3 cli.py run test-cases/TC-xxx.md --no-publish
 ```
-*(Tambahkan `--no-publish` jika pengguna hanya ingin pengujian lokal tanpa unggah Google Drive).*
 
-### Langkah 4: Pelaporan Hasil
+### Langkah 4: Pelaporan Hasil & Diagnostik Kegagalan
 Baca output eksekusi dan sajikan ke pengguna:
 - **Verdict**: `PASSED` / `FAILED` / `BLOCKED` / `ERROR`.
 - **Keterangan**: Hasil evaluasi aktual.
-- **Tautan Bukti Google Docs**: Link dokumen laporan jika berhasil diunggah.
-- **Tautan Bukti Video**: Link rekaman video WebM di Google Drive.
+
+**Jika Hasil Pengujian `FAILED` atau `BLOCKED` (AI Failure Diagnostics)**:
+1. Panggil helper diagnostik:
+   ```bash
+   python3 cli.py diagnose <RUN_ID>
+   ```
+2. Baca berkas tangkapan layar kegagalan (`failure_screenshot_path`) menggunakan tool visual `read`.
+3. Analisis antarmuka web pada titik kegagalan:
+   - Apakah ada alert merah (misal: "Username or Password incorrect", "Account locked")?
+   - Apakah tombol dalam keadaan disabled?
+   - Apakah kolom formulir belum terisi lengkap?
+4. Rumuskan analisis akar masalah (*Root Cause Analysis*) dalam bahasa manusia yang ramah, dan sematkan ke dalam laporan:
+   ```bash
+   python3 cli.py diagnose <RUN_ID> --attach "Analisis AI: <penjelasan_akar_masalah_dan_saran>"
+   ```
+5. Berkas laporan DOCX akan otomatis diperbarui dan komentar Jira (jika aktif) akan menyertakan analisis tersebut.
 
 ---
 
@@ -123,9 +142,9 @@ Skill ini dapat dijalankan dari direktori kerja mana pun. Agen harus menyelesaik
 3. Gunakan path instalasi standar: `/root/dev/sangQA`.
 
 Contoh eksekusi:
-- **Setujui Uji**: `python3 <SAQA_ROOT>/cli.py approve <path_to_test_case.md>`
-- **Jalankan Uji**: `python3 <SAQA_ROOT>/cli.py run <path_to_test_case.md> --no-publish`
-- **Publikasikan**: `python3 <SAQA_ROOT>/cli.py publish <run_id>`
-- **Lihat Riwayat**: `python3 <SAQA_ROOT>/cli.py list`
-
-*(Catatan: Jalankan selalu dengan flag `--no-publish` terlebih dahulu untuk meninjau artefak lokal sebelum mengunggah ke Google Drive).*
+- **Konfigurasi Proyek**: `python3 <SAQA_ROOT>/cli.py config --project-root .`
+- **Setujui Uji**: `python3 <SAQA_ROOT>/cli.py approve <path_to_test_case.md> --project-root .`
+- **Jalankan Uji**: `python3 <SAQA_ROOT>/cli.py run <path_to_test_case.md> --no-publish --project-root .`
+- **Diagnosa Run**: `python3 <SAQA_ROOT>/cli.py diagnose <run_id> [--attach "<analysis>"] --project-root .`
+- **Publikasikan**: `python3 <SAQA_ROOT>/cli.py publish <run_id> --project-root .`
+- **Lihat Riwayat**: `python3 <SAQA_ROOT>/cli.py list --project-root .`

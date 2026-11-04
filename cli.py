@@ -19,6 +19,7 @@ from runner.adapters.jira import (
     format_jira_verdict_comment,
     publish_jira_artifacts
 )
+from runner.diagnostics import get_failure_context, attach_ai_diagnosis
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
 
@@ -402,6 +403,32 @@ def cmd_list(args):
                 print(f"{r.name:<32} | {'(corrupt)':<10} | {'-':<8} | {'-':<12}")
     return 0
 
+def cmd_diagnose(args):
+    project_root = Path(args.project_root).resolve()
+    run_id = args.run_id
+    attach_text = getattr(args, "attach", None)
+    try:
+        if attach_text:
+            res = attach_ai_diagnosis(run_id, attach_text, project_root=project_root)
+            print(f"✅ Analisis AI berhasil disematkan pada {run_id}:")
+            print(f"   • Laporan DOCX diperbarui: {res['report_docx']}")
+            return 0
+        else:
+            ctx = get_failure_context(run_id, project_root=project_root)
+            print(f"\n🔍 [SAQA Failure Context] Run ID: {run_id}")
+            print(f"   • Kasus Uji: {ctx['test_case_id']} - {ctx['title']}")
+            print(f"   • Verdict: {ctx['verdict']}")
+            print(f"   • Hasil Aktual: {ctx['actual_result']}")
+            if ctx.get("error_message"):
+                print(f"   • Pesan Error: {ctx['error_message']}")
+            print(f"   • Path Tangkapan Layar: {ctx['failure_screenshot_path']}")
+            print("\nKonteks detail (JSON):")
+            print(json.dumps(ctx, indent=2))
+            return 0
+    except Exception as e:
+        print(f"❌ Gagal mengambil konteks diagnostik: {str(e)}")
+        return 1
+
 def main():
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--project-root", default=argparse.SUPPRESS, help="Root direktori proyek aktif")
@@ -451,6 +478,12 @@ def main():
     parser_j_process.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")
     parser_j_process.add_argument("--no-publish", action="store_true", help="Jangan otomatis upload ke Google Drive")
     parser_jira.set_defaults(func=cmd_jira)
+
+    # Subcommand: diagnose
+    parser_diag = subparsers.add_parser("diagnose", parents=[common_parser], help="Ambil konteks kegagalan eksekusi atau sematkan analisis AI")
+    parser_diag.add_argument("run_id", help="ID Run yang gagal (misal: RUN_20261104_xxx)")
+    parser_diag.add_argument("--attach", help="Teks analisis akar masalah (root cause) untuk disematkan ke laporan")
+    parser_diag.set_defaults(func=cmd_diagnose)
 
     args = parser.parse_args()
     return args.func(args)

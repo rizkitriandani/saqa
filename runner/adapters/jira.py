@@ -227,10 +227,22 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
         f"* *Test Case*: {tc_id} - {title}",
         f"* *Verdict*: {verdict}",
         f"* *Duration*: {dur} seconds",
-        f"* *Details*: {actual}",
+        f"* *Details*: {actual}"
+    ]
+
+    if meta.get("ai_diagnosis"):
+        lines.extend([
+            "",
+            "h4. Analisis Diagnostik AI (Root-Cause Diagnosis):",
+            "{quote}",
+            meta["ai_diagnosis"],
+            "{quote}"
+        ])
+
+    lines.extend([
         "",
         "h4. Bukti Hasil Pengujian (Attachments):"
-    ]
+    ])
 
     if attachments:
         for att in attachments:
