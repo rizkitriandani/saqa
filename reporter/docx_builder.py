@@ -37,8 +37,12 @@ def add_hyperlink(paragraph, url: str, text: str, color_rgb: str = "0B57D0", und
     paragraph._p.append(hyperlink)
     return hyperlink
 
-def build_docx_report(metadata_path: Path, drive_video_url: str = None) -> Path:
-    repo_root = Path(__file__).resolve().parent.parent
+def build_docx_report(metadata_path: Path, drive_video_url: str = None, project_root: Path = None) -> Path:
+    if project_root is None:
+        # metadata.json berada di: <project_root>/artifacts/<run_id>/metadata.json
+        project_root = metadata_path.resolve().parent.parent.parent
+    project_root = Path(project_root).resolve()
+
     with open(metadata_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
@@ -118,7 +122,7 @@ def build_docx_report(metadata_path: Path, drive_video_url: str = None) -> Path:
 
         sc_rel = s.get("screenshot")
         if sc_rel:
-            sc_abs = repo_root / sc_rel
+            sc_abs = project_root / sc_rel
             if sc_abs.exists():
                 try:
                     doc.add_paragraph()

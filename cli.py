@@ -136,12 +136,11 @@ def cmd_run(args):
     run_dir = project_root / "artifacts" / run_id
     meta_path = run_dir / "metadata.json"
     if meta_path.exists():
-        docx_path = build_docx_report(meta_path)
+        docx_path = build_docx_report(meta_path, project_root=project_root)
         print(f"📄 Laporan DOCX berhasil dikompilasi: {docx_path.relative_to(project_root)}")
 
-    if no_publish or verdict != "PASSED":
-        if no_publish:
-            print(f"ℹ️  Publikasi otomatis dilewati (--no-publish). Jalankan 'python3 cli.py publish {run_id}' untuk publikasi.")
+    if no_publish:
+        print(f"ℹ️  Publikasi otomatis dilewati (--no-publish). Jalankan 'python3 cli.py publish {run_id} --project-root {project_root}' untuk publikasi.")
         return 0 if verdict == "PASSED" else 1
 
     # Attempt Google Drive / Docs Publish jika dikonfigurasi
@@ -197,9 +196,10 @@ def cmd_list(args):
 
 def main():
     common_parser = argparse.ArgumentParser(add_help=False)
-    common_parser.add_argument("--project-root", default=".", help="Root direktori proyek aktif (default: current working directory)")
+    common_parser.add_argument("--project-root", default=argparse.SUPPRESS, help="Root direktori proyek aktif")
 
     parser = argparse.ArgumentParser(description="SAQA: AI QA Automation CLI", parents=[common_parser])
+    parser.set_defaults(project_root=".")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Subcommand: config / init

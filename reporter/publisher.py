@@ -62,9 +62,6 @@ def publish_artifacts(run_id: str, force: bool = False, project_root: Path = Non
 
     cred_path_str = env_vars.get(cred_var, os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials/service-account.json"))
     cred_path = project_root / cred_path_str if not os.path.isabs(cred_path_str) else Path(cred_path_str)
-    # Jika tidak ada di project_root, coba fallback ke repo_root
-    if not cred_path.exists() and (repo_root / cred_path_str).exists():
-        cred_path = repo_root / cred_path_str
 
     parent_folder_id = env_vars.get(folder_var, os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
 
@@ -199,7 +196,7 @@ def publish_artifacts(run_id: str, force: bool = False, project_root: Path = Non
 
         # Re-build docx dengan link video Google Drive (mengaktifkan clickable hyperlink)
         from reporter.docx_builder import build_docx_report
-        docx_path = build_docx_report(metadata_path, drive_video_url=video_drive_link)
+        docx_path = build_docx_report(metadata_path, drive_video_url=video_drive_link, project_root=project_root)
 
         # 2. Upload, pindahkan, atau perbarui DOCX menjadi native Google Docs di dalam run_folder
         doc_name = f"Laporan_{meta.get('test_case_id')}_{run_id}"

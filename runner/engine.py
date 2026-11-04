@@ -234,6 +234,19 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md", proj
     proj_cfg = load_project_config(project_root)
     env_vars = load_project_env(project_root)
 
+    dev_base_url = proj_cfg.get("environment", {}).get("base_url") or env_vars.get("DEV_BASE_URL", "")
+    username_var = proj_cfg.get("environment", {}).get("username_env", "QA_USERNAME")
+    password_var = proj_cfg.get("environment", {}).get("password_env", "QA_PASSWORD")
+
+    # Petakan variabel logis runner berdasarkan konfigurasi environment proyek
+    active_env_vars = dict(env_vars)
+    if username_var in env_vars:
+        active_env_vars["QA_USERNAME"] = env_vars[username_var]
+    if password_var in env_vars:
+        active_env_vars["QA_PASSWORD"] = env_vars[password_var]
+    if dev_base_url:
+        active_env_vars["DEV_BASE_URL"] = dev_base_url
+
     tc_path = project_root / test_case_file if not os.path.isabs(test_case_file) else Path(test_case_file)
     parsed_tc = parse_markdown_test_case(tc_path)
 
@@ -252,7 +265,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md", proj
 
     target_url_resolved = ""
     try:
-        target_url_resolved = resolve_variables(parsed_tc.get("target_url", ""), env_vars)
+        target_url_resolved = resolve_variables(parsed_tc.get("target_url", ""), active_env_vars)
     except Exception:
         target_url_resolved = parsed_tc.get("target_url", "")
 
@@ -317,7 +330,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md", proj
     allowed_origins = get_allowed_origins(dev_base_url) | configured_origins
 
     # 3. Preflight Check Sebelum Browser Diluncurkan
-    preflight_errors = preflight_validate(parsed_tc, env_vars, allowed_origins)
+    preflight_errors = preflight_validate(parsed_tc, active_env_vars, allowed_origins)
     if preflight_errors:
         metadata["verdict"] = "ERROR"
         metadata["error_message"] = f"Validasi preflight gagal (browser tidak dibuka): {'; '.join(preflight_errors)}"
@@ -347,7 +360,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md", proj
                 target = s["target"]
                 outcome = s.get("expected_step_outcome", "")
 
-                execute_step_action(page, s, env_vars, allowed_origins)
+                execute_step_action(page, s, active_env_vars, allowed_origins)
                 time.sleep(0.5)
 
                 sc_name = f"step_{step_num}_{action}.png"

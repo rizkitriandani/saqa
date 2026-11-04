@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 
 SUPPORTED_CONFIG_VERSION = 1
+SUPPORTED_INPUT_TRIGGERS = {"cli"}
 SUPPORTED_INPUT_SOURCES = {"repo", "cli"}
 SUPPORTED_OUTPUT_TYPES = {"local", "google_drive"}
 
@@ -54,6 +55,13 @@ def validate_project_config(cfg: Dict[str, Any]) -> List[str]:
             errors.append(f"URL 'environment.base_url' ({base_url}) tidak valid.")
 
     input_cfg = cfg.get("input", {})
+    trigger = input_cfg.get("trigger", "cli")
+    if trigger not in SUPPORTED_INPUT_TRIGGERS:
+        errors.append(
+            f"Pemicu input '{trigger}' belum didukung pada rilis ini. "
+            f"Pilihan aktif: {sorted(list(SUPPORTED_INPUT_TRIGGERS))}."
+        )
+
     src = input_cfg.get("source", "repo")
     if src not in SUPPORTED_INPUT_SOURCES:
         errors.append(
@@ -170,19 +178,19 @@ def create_project_config(
 
     cfg_file.write_text(json.dumps(config_data, indent=2) + "\n", encoding="utf-8")
 
-    # Generate template .env.example non-rahasia
+    # Generate template .env.example non-rahasia hanya jika belum ada atau overwrite=True
     example_env = project_root / ".env.example"
-    env_lines = [
-        f"# SAQA Configuration for project: {project_id}",
-        f"DEV_BASE_URL={base_url}",
-        "QA_USERNAME=your_username_here",
-        "QA_PASSWORD=your_password_here"
-    ]
-    if enable_google_drive:
-        env_lines.extend([
-            "GOOGLE_DRIVE_FOLDER_ID=your_shared_drive_folder_id_here",
-            "GOOGLE_APPLICATION_CREDENTIALS=credentials/service-account.json"
-        ])
-
-    example_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+    if not example_env.exists() or overwrite:
+        env_lines = [
+            f"# SAQA Configuration for project: {project_id}",
+            f"DEV_BASE_URL={base_url}",
+            "QA_USERNAME=your_username_here",
+            "QA_PASSWORD=your_password_here"
+        ]
+        if enable_google_drive:
+            env_lines.extend([
+                "GOOGLE_DRIVE_FOLDER_ID=your_shared_drive_folder_id_here",
+                "GOOGLE_APPLICATION_CREDENTIALS=credentials/service-account.json"
+            ])
+        example_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     return cfg_file
