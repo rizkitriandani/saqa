@@ -351,6 +351,31 @@ def start_webhook_server(
     cfg = load_project_config(project_root)
     project_id = cfg.get("project_id", project_root.name)
 
+def start_webhook_server(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    project_root: Path = None,
+    runner_override: Optional[str] = None,
+    allow_unauthenticated: bool = False,
+    server_ready_callback: Optional[Any] = None
+):
+    """Menjalankan server webhook HTTP dengan worker antrean durable SQLite."""
+    if project_root is None:
+        project_root = Path.cwd()
+    project_root = Path(project_root).resolve()
+
+    # Preflight check: tolak startup jika WEBHOOK_SECRET tidak ada dan allow_unauthenticated=False
+    env_vars = load_project_env(project_root)
+    if not env_vars.get("WEBHOOK_SECRET") and not allow_unauthenticated:
+        raise ValueError(
+            "WEBHOOK_SECRET wajib disetel di .env proyek untuk menjalankan server webhook secara aman. "
+            "Gunakan flag --allow-unauthenticated jika hanya ingin pengujian lokal tanpa autentikasi."
+        )
+
+    db_path = get_db_path(project_root)
+    cfg = load_project_config(project_root)
+    project_id = cfg.get("project_id", project_root.name)
+
     # 1. Ambil exclusive lock file per proyek untuk mencegah dua server berjalan bersamaan di proyek yang sama
     import fcntl
     lock_dir = project_root / "artifacts"
@@ -363,46 +388,46 @@ def start_webhook_server(
         lock_fd.close()
         raise RuntimeError(f"Server webhook untuk proyek '{project_id}' sudah aktif berjalan di proses lain.")
 
-    # 2. Definisikan handler terisolasi untuk instance server ini
-    class CustomHandler(SaqaWebhookHandler):
-        pass
-    CustomHandler.project_root = project_root
-    CustomHandler.runner_override = runner_override
-    CustomHandler.allow_unauthenticated = allow_unauthenticated
+    httpd = None
+    worker_thread = None
+    stop_event = threading.Event()
 
-    # 3. Bind socket (fail-closed jika port bentrok)
-    server_address = (host, port)
     try:
-        httpd = HTTPServer(server_address, CustomHandler)
-    except Exception:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        except Exception:
+        # 2. Definisikan handler terisolasi untuk instance server ini
+        class CustomHandler(SaqaWebhookHandler):
             pass
-        lock_fd.close()
-        raise
+        CustomHandler.project_root = project_root
+        CustomHandler.runner_override = runner_override
+        CustomHandler.allow_unauthenticated = allow_unauthenticated
 
-    logger.info(f"🌐 [SAQA Webhook Server] Socket berhasil di-bind di http://{host}:{port}/jira-webhook")
-    logger.info(f"📁 Project Root: {project_root}")
-    logger.info(f"⚙️  Default Runner: {runner_override or 'from saqa.json'}")
+        # 3. Bind socket (fail-closed jika port bentrok)
+        server_address = (host, port)
+        httpd = HTTPServer(server_address, CustomHandler)
+        logger.info(f"🌐 [SAQA Webhook Server] Socket berhasil di-bind di http://{host}:{port}/jira-webhook")
+        logger.info(f"📁 Project Root: {project_root}")
+        logger.info(f"⚙️  Default Runner: {runner_override or 'from saqa.json'}")
 
-    # 4. Rekonsiliasi job yang terinterupsi saat restart sebelumnya (hanya setelah lock & socket aman)
-    reconcile_interrupted_jobs_on_startup(db_path, project_id)
+        # 4. Rekonsiliasi job yang terinterupsi saat restart sebelumnya (hanya setelah lock & socket aman)
+        reconcile_interrupted_jobs_on_startup(db_path, project_id)
 
-    # 5. Jalankan background worker untuk memproses antrean SQLite
-    _WORKER_STOP_EVENT.clear()
-    _WORKER_THREAD = threading.Thread(target=queue_worker_loop, args=(project_root, _WORKER_STOP_EVENT), daemon=True)
-    _WORKER_THREAD.start()
+        # 5. Jalankan background worker untuk memproses antrean SQLite
+        stop_event.clear()
+        worker_thread = threading.Thread(target=queue_worker_loop, args=(project_root, stop_event), daemon=True)
+        worker_thread.start()
 
-    try:
+        if server_ready_callback:
+            server_ready_callback(httpd)
+
         httpd.serve_forever()
     except KeyboardInterrupt:
         logger.info("\nServer webhook dihentikan.")
     finally:
-        _WORKER_STOP_EVENT.set()
-        if _WORKER_THREAD and _WORKER_THREAD.is_alive():
-            _WORKER_THREAD.join(timeout=5.0)
-        httpd.server_close()
+        stop_event.set()
+        # Wajib menunggu worker benar-benar berhenti sebelum lock proyek dilepas
+        if worker_thread and worker_thread.is_alive():
+            worker_thread.join()
+        if httpd:
+            httpd.server_close()
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
         except Exception:

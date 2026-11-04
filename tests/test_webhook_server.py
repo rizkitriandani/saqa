@@ -338,8 +338,8 @@ class TestWebhookServer(unittest.TestCase):
             self.assertIn("WEBHOOK_SECRET wajib disetel", str(ctx.exception))
 
     def test_server_lifecycle_and_clean_lock_release(self):
-        # Menguji lifecycle penuh: startup, bind port, exclusive lock, hingga clean shutdown
-        from runner.adapters.webhook_server import SaqaWebhookHandler
+        # Menguji lifecycle penuh entry point produksi start_webhook_server
+        from runner.adapters.webhook_server import start_webhook_server
         import fcntl
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -353,36 +353,51 @@ class TestWebhookServer(unittest.TestCase):
                 "outputs": [{"type": "local"}]
             }), encoding="utf-8")
 
-            class LifecycleHandler(SaqaWebhookHandler):
-                pass
-            LifecycleHandler.project_root = proj_root
-            LifecycleHandler.runner_override = "local"
-            LifecycleHandler.allow_unauthenticated = False
+            ready_event = threading.Event()
+            server_box = [None]
+            def on_ready(httpd):
+                server_box[0] = httpd
+                ready_event.set()
 
-            # Bind socket pada port dinamis 0
-            server = HTTPServer(("127.0.0.1", 0), LifecycleHandler)
+            # Jalankan start_webhook_server di background thread
+            st_thread = threading.Thread(
+                target=start_webhook_server,
+                kwargs={
+                    "host": "127.0.0.1",
+                    "port": 0,
+                    "project_root": proj_root,
+                    "server_ready_callback": on_ready
+                },
+                daemon=True
+            )
+            st_thread.start()
+            self.assertTrue(ready_event.wait(timeout=5))
+
+            httpd = server_box[0]
+            port = httpd.server_port
+
+            # 1. Panggil /health ke instance server yang hidup
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(data["status"], "ok")
+                self.assertEqual(data["project_id"], "lifecycle-proj")
+
+            # 2. Instance kedua pada project_root yang sama wajib ditolak (lock conflict)
+            with self.assertRaises(RuntimeError) as ctx:
+                start_webhook_server(host="127.0.0.1", port=0, project_root=proj_root)
+            self.assertIn("sudah aktif berjalan", str(ctx.exception))
+
+            # 3. Shutdown server
+            httpd.shutdown()
+            st_thread.join(timeout=5)
+
+            # 4. Setelah shutdown, lock file harus sudah dilepas
             lock_file = proj_root / "artifacts" / "webhook.lock"
-            (proj_root / "artifacts").mkdir(parents=True, exist_ok=True)
-            lock_fd = open(lock_file, "a+")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-            try:
-                # Verifikasi lock aktif: proses lain tidak bisa mengunci
-                test_fd = open(lock_file, "a+")
-                with self.assertRaises((BlockingIOError, OSError)):
-                    fcntl.flock(test_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                test_fd.close()
-            finally:
-                # Clean shutdown & release lock
-                server.server_close()
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
-
-            # Setelah shutdown, file lock bisa dikunci kembali tanpa error
-            after_fd = open(lock_file, "a+")
-            fcntl.flock(after_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(after_fd, fcntl.LOCK_UN)
-            after_fd.close()
+            test_fd = open(lock_file, "a+")
+            fcntl.flock(test_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(test_fd, fcntl.LOCK_UN)
+            test_fd.close()
 
 if __name__ == "__main__":
     unittest.main()
