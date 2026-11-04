@@ -24,8 +24,6 @@ logger = logging.getLogger("saqa.webhook")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 MAX_PAYLOAD_SIZE = 1024 * 1024  # 1 MiB max
-_WORKER_THREAD: Optional[threading.Thread] = None
-_WORKER_STOP_EVENT = threading.Event()
 
 def extract_issue_key_from_payload(payload: dict) -> Optional[str]:
     """
@@ -324,32 +322,6 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
             "message": "Pekerjaan pengujian berhasil disimpan di antrean durable."
         })
 
-
-def start_webhook_server(
-    host: str = "127.0.0.1",
-    port: int = 8080,
-    project_root: Path = None,
-    runner_override: Optional[str] = None,
-    allow_unauthenticated: bool = False
-):
-    """Menjalankan server webhook HTTP dengan worker antrean durable SQLite."""
-    global _WORKER_THREAD, _WORKER_STOP_EVENT
-
-    if project_root is None:
-        project_root = Path.cwd()
-    project_root = Path(project_root).resolve()
-
-    # Preflight check: tolak startup jika WEBHOOK_SECRET tidak ada dan allow_unauthenticated=False
-    env_vars = load_project_env(project_root)
-    if not env_vars.get("WEBHOOK_SECRET") and not allow_unauthenticated:
-        raise ValueError(
-            "WEBHOOK_SECRET wajib disetel di .env proyek untuk menjalankan server webhook secara aman. "
-            "Gunakan flag --allow-unauthenticated jika hanya ingin pengujian lokal tanpa autentikasi."
-        )
-
-    db_path = get_db_path(project_root)
-    cfg = load_project_config(project_root)
-    project_id = cfg.get("project_id", project_root.name)
 
 def start_webhook_server(
     host: str = "127.0.0.1",
