@@ -104,13 +104,15 @@ class TestHermesPlugin(unittest.TestCase):
         mock_ctx = MagicMock()
         register(mock_ctx)
 
-        # Harus mendaftarkan 5 tool
-        self.assertEqual(mock_ctx.register_tool.call_count, 5)
+        # Harus mendaftarkan 7 tool
+        self.assertEqual(mock_ctx.register_tool.call_count, 7)
         registered_names = [call[1]["name"] for call in mock_ctx.register_tool.call_args_list]
         self.assertIn("saqa_run", registered_names)
         self.assertIn("saqa_approve", registered_names)
+        self.assertIn("saqa_approve_and_run", registered_names)
         self.assertIn("saqa_diagnose", registered_names)
         self.assertIn("saqa_jira_inspect", registered_names)
+        self.assertIn("saqa_jira_validate", registered_names)
         self.assertIn("saqa_jira_process", registered_names)
 
         # Harus mendaftarkan slash command /saqa

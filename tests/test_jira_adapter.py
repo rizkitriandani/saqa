@@ -230,7 +230,28 @@ class TestJiraAdapter(unittest.TestCase):
             )
             tc_dir = proj_dir / "test-cases"
             tc_dir.mkdir(parents=True)
-            (tc_dir / "TC-001-sample.md").write_text("# TC-001", encoding="utf-8")
+            tc_content = (
+                "# TC-001: Sample Test\n\n"
+                "- **ID**: TC-001\n"
+                "- **Title**: Sample Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                "- **Target URL**: https://example.com\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| 1 | navigate | https://example.com | - | Loaded |\n\n"
+                "## Expected Results\n"
+                "- heading contains \"Sample\"\n"
+            )
+            from runner.parser import compute_canonical_content_hash
+            h = compute_canonical_content_hash(tc_content)
+            tc_signed = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            (tc_dir / "TC-001-sample.md").write_text(tc_signed, encoding="utf-8")
 
             from cli import cmd_jira_process
             import argparse

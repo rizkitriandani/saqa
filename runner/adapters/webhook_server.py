@@ -145,6 +145,9 @@ def process_job_execution(job: dict, project_root: Path):
             if ret == 0:
                 mark_job_status(db_path, job_id, "COMPLETED")
                 logger.info(f"✅ [Worker] Job #{job_id} ({issue_key}) selesai sukses.")
+            elif ret == 2:
+                mark_job_status(db_path, job_id, "NEEDS_CLARIFICATION", error_message="Tiket membutuhkan klarifikasi/persetujuan skenario pengujian.")
+                logger.info(f"💬 [Worker] Job #{job_id} ({issue_key}) berstatus NEEDS_CLARIFICATION. Sesi klarifikasi dikirim.")
             else:
                 mark_job_status(db_path, job_id, "FAILED", error_message="Eksekusi return code non-zero.")
                 logger.warning(f"⚠️ [Worker] Job #{job_id} ({issue_key}) selesai dengan status FAILED.")

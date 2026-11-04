@@ -222,18 +222,46 @@ python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> --project-root .
 
 ## Jira Cloud Integration
 
-### Manual Ticket Inspection & Execution
-- **Inspect a Ticket (Read-Only)**:
+### Manual Ticket Inspection, Validation, & Execution
+- **Inspect a Ticket (Read-Only Info)**:
   ```bash
-  python3 "$SAQA_ROOT/cli.py" jira inspect MED-101 --project-root .
+  saqa jira inspect MED-101 --project-root .
   ```
-  *(Checks ticket status, summary, and extracts referenced test cases under the `Test Cases` heading).*
+- **Validate Ticket Readiness (Pre-Flight Check)**:
+  ```bash
+  saqa jira validate MED-101 --project-root .
+  ```
+  *(Checks whether referenced test cases exist, are approved, and meet contract requirements. Emits structured reason codes: `READY`, `MISSING_TEST_CASE_REFERENCE`, `TEST_CASE_NOT_APPROVED`, `RAW_SCENARIO_DETECTED`).*
 
 - **Execute & Attach to Jira**:
   ```bash
-  python3 "$SAQA_ROOT/cli.py" jira process MED-101 --project-root .
+  saqa jira process MED-101 --project-root .
   ```
-  *(Runs referenced tests, uploads `report.docx` and `evidence.webm` to the ticket's attachments, and posts a verdict summary comment).*
+  *(Runs referenced tests, uploads `report.docx` and `evidence.webm` to ticket attachments, and posts verdict comments. If the ticket is unready, automatically initiates a clarification session and dispatches prompts).*
+
+---
+
+## Multi-Channel Notifications & AI Grilling Loop
+
+When a Jira ticket transitions to `In Testing` / `ON QA` without a valid, approved test case:
+1. SAQA records status `NEEDS_CLARIFICATION` in SQLite and releases the worker thread immediately.
+2. The channel-agnostic notifier dispatches a prompt to your configured chat channel (Telegram, Slack, Discord, or generic webhook).
+3. The AI agent (Hermes/Pi) conducts an interactive clarification (*grilling*) session with QA to flesh out test steps, drafts a compliant test case, and executes upon user approval (`Approve & Run`).
+
+### Configuring Chat Channels (`saqa.json`)
+```json
+{
+  "project_id": "tracking",
+  "notifications": {
+    "channel": "telegram",  // options: "telegram", "slack", "discord", "webhook"
+    "thread_id": "optional_thread_or_topic_id"
+  }
+}
+```
+Define destination secrets in `.env`:
+- **Telegram**: `SAQA_TELEGRAM_BOT_TOKEN` & `SAQA_TELEGRAM_CHAT_ID`
+- **Slack**: `SLACK_WEBHOOK_URL`
+- **Discord**: `DISCORD_WEBHOOK_URL`
 
 ### Automated Execution Options (Jira Webhook)
 
@@ -296,6 +324,7 @@ saqa publish <RUN_ID> [--jira-issue <KEY>] [--force] [--project-root <path>]
 
 # Jira ticket operations
 saqa jira inspect <ISSUE_KEY> [--project-root <path>]
+saqa jira validate <ISSUE_KEY> [--project-root <path>]
 saqa jira process <ISSUE_KEY> [--no-publish] [--project-root <path>]
 
 # Setup agent harnesses (Pi & Hermes)

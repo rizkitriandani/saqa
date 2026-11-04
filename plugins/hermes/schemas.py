@@ -122,3 +122,51 @@ SAQA_JIRA_PROCESS = {
         "required": ["issue_key"],
     },
 }
+
+SAQA_JIRA_VALIDATE = {
+    "name": "saqa_jira_validate",
+    "description": (
+        "Evaluate whether a Jira ticket is ready for automated execution. "
+        "Returns readiness status ('ready': true/false), reason_code, and action_required."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "issue_key": {
+                "type": "string",
+                "description": "Jira Issue Key (e.g. 'MED-101')",
+            },
+            "project_root": {
+                "type": "string",
+                "description": "Optional project root directory",
+            },
+        },
+        "required": ["issue_key"],
+    },
+}
+
+SAQA_APPROVE_AND_RUN = {
+    "name": "saqa_approve_and_run",
+    "description": (
+        "Atomically approve a test case with its SHA-256 hash AND immediately execute it. "
+        "Use when an authorized operator confirms 'Approve & Run' in chat."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "test_case": {
+                "type": "string",
+                "description": "Path to the markdown test case file to approve and execute",
+            },
+            "no_publish": {
+                "type": "boolean",
+                "description": "If true, skips uploading to Google Drive or Jira (default: false)",
+            },
+            "project_root": {
+                "type": "string",
+                "description": "Optional project root directory",
+            },
+        },
+        "required": ["test_case"],
+    },
+}

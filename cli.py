@@ -19,6 +19,14 @@ from runner.adapters.jira import (
     format_jira_verdict_comment,
     publish_jira_artifacts
 )
+from runner.readiness import (
+    evaluate_ticket_readiness,
+    ReasonCode,
+    ActionRequired,
+    create_or_get_clarification_session
+)
+from runner.adapters.job_queue import get_db_path
+from runner.adapters.notifier import dispatch_clarification_prompt, dispatch_execution_result
 from runner.diagnostics import get_failure_context, attach_ai_diagnosis
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
@@ -242,7 +250,8 @@ def cmd_jira_inspect(args):
         print(f"   • Summary: {summary}")
         print(f"   • Status: {status}")
 
-        test_cases_dir = project_root / "test-cases"
+        tc_dir_rel = proj_cfg.get("input", {}).get("test_cases_dir", "test-cases")
+        test_cases_dir = project_root / tc_dir_rel
         try:
             refs = extract_test_case_references(desc_text, test_cases_dir)
             print(f"   • Referensi Kasus Uji Ditemukan ({len(refs)}): {[r.name for r in refs]}")
@@ -255,6 +264,45 @@ def cmd_jira_inspect(args):
         return 0
     except Exception as e:
         print(f"❌ Gagal memeriksa tiket {issue_key}: {str(e)}")
+        return 1
+
+def cmd_jira_validate(args):
+    project_root = Path(args.project_root).resolve()
+    issue_key = args.issue_key.strip().upper()
+    try:
+        proj_cfg = load_project_config(project_root)
+        allowed_keys = proj_cfg.get("environment", {}).get("project_keys", [])
+        if allowed_keys:
+            proj_prefix = issue_key.split("-")[0]
+            if proj_prefix not in allowed_keys:
+                print(f"❌ Project key '{proj_prefix}' tidak ada dalam allowlist proyek: {allowed_keys}")
+                return 1
+
+        client = get_jira_client(project_root)
+        issue = client.get_issue(issue_key)
+        fields = issue.get("fields", {})
+        summary = fields.get("summary", "-")
+        status = fields.get("status", {}).get("name", "-")
+        desc_raw = fields.get("description", "")
+
+        tc_dir_rel = proj_cfg.get("input", {}).get("test_cases_dir", "test-cases")
+        readiness = evaluate_ticket_readiness(desc_raw, project_root, test_cases_dir_rel=tc_dir_rel)
+
+        print(f"\n🔍 [Jira Validate] Evaluasi Kesiapan Tiket: {issue_key}")
+        print(f"   • Summary: {summary}")
+        print(f"   • Status: {status}")
+        print(f"   • Status Kesiapan (Ready): {'✅ SIAP DIEKSEKUSI' if readiness['ready'] else '⚠️ BUTUH KLARIFIKASI/APPROVAL'}")
+        print(f"   • Reason Code: {readiness['reason_code']}")
+        print(f"   • Action Required: {readiness['action_required']}")
+        print(f"   • Keterangan: {readiness['details']}")
+        if readiness["referenced_ids"]:
+            print(f"   • Referensi Terdeteksi: {readiness['referenced_ids']}")
+        if readiness["unapproved_files"]:
+            print(f"   • Kasus Uji Belum Disetujui: {[u['file'] for u in readiness['unapproved_files']]}")
+
+        return 0 if readiness["ready"] else 1
+    except Exception as e:
+        print(f"❌ Gagal memvalidasi tiket {issue_key}: {str(e)}")
         return 1
 
 def cmd_jira_process(args):
@@ -277,7 +325,6 @@ def cmd_jira_process(args):
         summary = fields.get("summary", "-")
         current_status = fields.get("status", {}).get("name", "-")
         desc_raw = fields.get("description", "")
-        desc_text = extract_text_from_description(desc_raw)
 
         print(f"\n🚀 [Jira Process] Memproses Tiket: {issue_key}")
         print(f"   • Summary: {summary}")
@@ -291,18 +338,33 @@ def cmd_jira_process(args):
                 print(f"ℹ️  Tiket berstatus '{current_status}'. Status pemicu yang dikonfigurasi: {trigger_statuses}. Eksekusi dilewati.")
                 return 0
 
-        test_cases_dir = project_root / "test-cases"
-        refs = []
-        try:
-            refs = extract_test_case_references(desc_text, test_cases_dir)
-        except Exception as ref_err:
-            print(f"❌ Kesalahan referensi kasus uji pada tiket: {str(ref_err)}")
-            return 1
+        tc_dir_rel = proj_cfg.get("input", {}).get("test_cases_dir", "test-cases")
+        readiness = evaluate_ticket_readiness(desc_raw, project_root, test_cases_dir_rel=tc_dir_rel)
 
-        if not refs:
-            scenario = extract_qa_scenario_block(desc_text)
-            if scenario:
-                draft_dir = test_cases_dir / "drafts"
+        # Jika tiket belum siap dieksekusi (perlu klarifikasi/approval)
+        if not readiness["ready"]:
+            reason_code = readiness["reason_code"]
+            action_req = readiness["action_required"]
+            details = readiness["details"]
+            print(f"⚠️  Tiket {issue_key} belum siap dieksekusi: [{reason_code}]")
+            print(f"   • Details: {details}")
+            print(f"   • Action Required: {action_req}")
+
+            # 1. Simpan sesi klarifikasi di SQLite
+            db_path = get_db_path(project_root)
+            notif_cfg = proj_cfg.get("notifications", {})
+            channel = notif_cfg.get("channel", "telegram")
+            session = create_or_get_clarification_session(
+                db_path=db_path,
+                project_id=proj_cfg.get("project_id", project_root.name),
+                issue_key=issue_key,
+                raw_scenario=readiness.get("raw_scenario"),
+                channel=channel
+            )
+
+            # 2. Jika ada raw scenario, buat draf jika belum ada
+            if readiness.get("raw_scenario"):
+                draft_dir = project_root / tc_dir_rel / "drafts"
                 draft_dir.mkdir(parents=True, exist_ok=True)
                 draft_file = draft_dir / f"{issue_key}-scenario.md"
                 if not draft_file.exists():
@@ -313,24 +375,34 @@ def cmd_jira_process(args):
                         f"- **Type**: Positive\n"
                         f"- **Execution Mode**: deterministic\n"
                         f"- **Approval Status**: pending\n\n"
-                        f"## Raw QA Scenario\n{scenario}\n",
+                        f"## Raw QA Scenario\n{readiness['raw_scenario']}\n",
                         encoding="utf-8"
                     )
-                msg = (
-                    f"(-) *[SAQA Notice]* Skenario pengujian terdeteksi pada tiket {issue_key}. "
-                    f"Draf kasus uji dibuat di `{draft_file.relative_to(project_root)}` dengan status *pending*. "
-                    f"Mohon review dan jalankan approve sebelum pengujian dapat dieksekusi."
-                )
-                jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
-                if not no_publish and (jira_outputs or not proj_cfg.get("outputs")):
-                    client.post_comment(issue_key, msg)
-                print(f"ℹ️  Draf kasus uji dibuat di {draft_file}. Menunggu review & approval manusia.")
-                return 0
-            else:
-                print("❌ Tidak ada referensi kasus uji (TC-xxx) maupun blok QA Scenario pada deskripsi tiket.")
-                return 1
 
-        for tc_file in refs:
+            # 3. Dispatch notifikasi klarifikasi ke channel yang dikonfigurasi
+            if not no_publish:
+                dispatch_clarification_prompt(project_root, issue_key, readiness, session)
+
+            # 4. Jika output Jira aktif, beri komentar notifikasi ramah di Jira
+            jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
+            if not no_publish and (jira_outputs or not proj_cfg.get("outputs")):
+                msg = (
+                    f"(-) *[SAQA Notice]* Tiket {issue_key} masuk status pengujian namun belum siap dieksekusi.\n"
+                    f"* *Status Kesiapan*: `{reason_code}`\n"
+                    f"* *Catatan*: {details}\n"
+                    f"* *Tindakan*: Tim QA dapat membalas chat bot atau menjalankan `/saqa audit` untuk memvalidasi skenario."
+                )
+                try:
+                    client.post_comment(issue_key, msg)
+                except Exception as e_cmt:
+                    print(f"⚠️ Gagal memposting komentar ke Jira: {e_cmt}")
+
+            # Return 2 to signal NEEDS_CLARIFICATION to caller/worker
+            return 2
+
+        # Jika sudah siap, eksekusi setiap test case
+        for tc_rel in readiness["test_case_paths"]:
+            tc_file = project_root / tc_rel
             print(f"\n▶ Menjalankan Kasus Uji: {tc_file.name}")
             meta = run_test_case(str(tc_file), project_root=project_root)
             run_id = meta["run_id"]
@@ -343,7 +415,7 @@ def cmd_jira_process(args):
             docx_path = build_docx_report(meta_path, project_root=project_root)
 
             if no_publish:
-                print("ℹ️  Publikasi Jira dilewati (--no-publish).")
+                print("ℹ️  Publikasi dilewati (--no-publish).")
                 continue
 
             drive_info = None
@@ -352,7 +424,7 @@ def cmd_jira_process(args):
             if drive_outputs:
                 drive_info = publish_artifacts(run_id, project_root=project_root)
 
-            # Upload attachments dan komentar ke Jira secara idempoten
+            # Upload attachments dan komentar ke Jira secara idempoten jika dikonfigurasi
             jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
             if jira_outputs or not proj_cfg.get("outputs"): # Default aktif saat memanggil subperintah jira
                 try:
@@ -361,6 +433,9 @@ def cmd_jira_process(args):
                 except Exception as e_jira:
                     print(f"⚠️  Gagal mempublikasikan hasil ke tiket Jira: {str(e_jira)}")
                     return 1
+
+            # Dispatch notifikasi eksekusi ke channel (Telegram/Slack/Discord)
+            dispatch_execution_result(project_root, issue_key, meta, drive_info=drive_info)
 
         return 0
     except Exception as e:
@@ -371,6 +446,8 @@ def cmd_jira(args):
     action = args.jira_action
     if action == "inspect":
         return cmd_jira_inspect(args)
+    elif action == "validate":
+        return cmd_jira_validate(args)
     elif action == "process":
         return cmd_jira_process(args)
     else:
@@ -556,6 +633,9 @@ def main():
 
     parser_j_inspect = jira_subparsers.add_parser("inspect", parents=[common_parser], help="Periksa status dan deskripsi tiket Jira")
     parser_j_inspect.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")
+
+    parser_j_validate = jira_subparsers.add_parser("validate", parents=[common_parser], help="Evaluasi kesiapan tiket secara terstruktur sebelum pengujian")
+    parser_j_validate.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")
 
     parser_j_process = jira_subparsers.add_parser("process", parents=[common_parser], help="Proses dan jalankan kasus uji dari tiket Jira")
     parser_j_process.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")

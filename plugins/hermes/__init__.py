@@ -24,6 +24,12 @@ def register(ctx):
         handler=tools.saqa_approve
     )
     ctx.register_tool(
+        name="saqa_approve_and_run",
+        toolset="saqa",
+        schema=schemas.SAQA_APPROVE_AND_RUN,
+        handler=tools.saqa_approve_and_run
+    )
+    ctx.register_tool(
         name="saqa_diagnose",
         toolset="saqa",
         schema=schemas.SAQA_DIAGNOSE,
@@ -34,6 +40,12 @@ def register(ctx):
         toolset="saqa",
         schema=schemas.SAQA_JIRA_INSPECT,
         handler=tools.saqa_jira_inspect
+    )
+    ctx.register_tool(
+        name="saqa_jira_validate",
+        toolset="saqa",
+        schema=schemas.SAQA_JIRA_VALIDATE,
+        handler=tools.saqa_jira_validate
     )
     ctx.register_tool(
         name="saqa_jira_process",

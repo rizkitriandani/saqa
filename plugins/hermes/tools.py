@@ -165,6 +165,40 @@ def saqa_jira_process(args: dict, **kwargs) -> str:
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
 
+def saqa_jira_validate(args: dict, **kwargs) -> str:
+    """Evaluate whether a Jira ticket is ready for automated execution."""
+    try:
+        issue_key = args.get("issue_key", "").strip()
+        if not issue_key:
+            return json.dumps({"ok": False, "error": "Parameter 'issue_key' is required."})
+
+        project_root = _resolve_project_root(args)
+        cmd_args = argparse.Namespace(issue_key=issue_key, project_root=str(project_root))
+
+        from cli import cmd_jira_validate
+        ret = cmd_jira_validate(cmd_args)
+        return json.dumps({"ok": ret == 0, "issue_key": issue_key})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+def saqa_approve_and_run(args: dict, **kwargs) -> str:
+    """Atomically approve a test case with its SHA-256 hash and immediately execute it."""
+    try:
+        app_res_str = saqa_approve(args, **kwargs)
+        app_res = json.loads(app_res_str)
+        if not app_res.get("ok"):
+            return app_res_str
+
+        run_res_str = saqa_run(args, **kwargs)
+        run_res = json.loads(run_res_str)
+        return json.dumps({
+            "ok": run_res.get("ok"),
+            "approval": app_res,
+            "execution": run_res
+        })
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
 def handle_saqa_command(raw_args: str) -> str:
     """Handler for Hermes slash command: /saqa [args]."""
     parts = raw_args.strip().split()

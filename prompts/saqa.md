@@ -1,6 +1,6 @@
 ---
-description: SAQA AI QA Automation (config, authoring, audit, runner, diagnose)
-argument-hint: "[config | run <path> | approve <path> | audit <path> | diagnose <run_id> | list]"
+description: SAQA AI QA Automation (config, authoring, audit, runner, diagnose, jira)
+argument-hint: "[config | run <path> | approve <path> | audit <path> | diagnose <run_id> | jira <inspect|validate|process> <KEY> | list]"
 ---
 Muat skill `saqa`. Argumen perintah yang diterima: "${@:-config}".
 

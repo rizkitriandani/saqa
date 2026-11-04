@@ -6,8 +6,10 @@ homepage: https://github.com/rizkitriandani/saqa
 provides_tools:
   - saqa_run
   - saqa_approve
+  - saqa_approve_and_run
   - saqa_diagnose
   - saqa_jira_inspect
+  - saqa_jira_validate
   - saqa_jira_process
 provides_commands:
   - saqa

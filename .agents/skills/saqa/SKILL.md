@@ -79,15 +79,20 @@ Setiap baris wajib menggunakan format gramar terukur dengan tanda kutip:
 
 ## 4. Alur Kerja Langkah Demi Langkah (Workflow)
 
-### Langkah 1: Wawancara & Pembuatan Draf
-Ketika pengguna meminta menguji sebuah alur (misal: *"Tolong buatkan test login admin"*):
-1. Tulis draf berkas kasus uji di `test-cases/TC-xxx.md`.
-2. Pastikan header memuat:
+### Langkah 1: Wawancara & Pembuatan Draf (Conversational Grilling)
+Ketika pengguna meminta menguji sebuah alur atau sistem menerima notifikasi tiket Jira yang belum siap dieksekusi:
+1. **Lakukan Grilling Proaktif**: Ajukan pertanyaan satu per satu untuk memperjelas:
+   - Apa target halaman dan modul fitur yang diuji?
+   - Akun/role pengguna apa yang digunakan?
+   - Apa urutan aksi spesifik (klik tombol apa, isi input apa)?
+   - Apa kriteria hasil terukur yang menentukan kelulusan?
+2. Tulis draf berkas kasus uji di `test-cases/TC-xxx.md` (atau `test-cases/drafts/<KEY>-scenario.md`).
+3. Pastikan header memuat:
    ```markdown
    - **Execution Mode**: deterministic
    - **Approval Status**: pending
    ```
-3. Tampilkan ringkasan langkah dan kriteria kelulusan kepada pengguna.
+4. Tampilkan ringkasan langkah dan kriteria kelulusan kepada pengguna.
 
 ### Langkah 2: Review & Approval Gate
 Tanyakan kepada operator manusia:
@@ -99,11 +104,10 @@ Jika pengguna meminta audit/cross-check terlebih dahulu:
 3. Periksa asersi: Apakah kriteria hasil memenuhi gramar mesin baku (`url contains`, `heading contains`, `text contains`, `element is visible`)?
 4. Berikan saran perbaikan dan perbarui berkas kasus uji agar siap disetujui.
 
-Jika pengguna memberikan konfirmasi verbal setuju, agen dapat mengeksekusi perintah persetujuan:
+Jika pengguna memberikan konfirmasi verbal *"Approve & Run"* di chat, agen dapat mengeksekusi persetujuan dan peluncuran secara atomik:
 ```bash
-python3 cli.py approve test-cases/TC-xxx.md
+python3 cli.py approve test-cases/TC-xxx.md && python3 cli.py run test-cases/TC-xxx.md --no-publish
 ```
-*(Perintah ini menghitung SHA-256 hash kanonikal dan menyematkan `Approval Hash` ke berkas).*
 
 ### Langkah 3: Eksekusi Pengujian
 Jalankan pengujian menggunakan CLI runner:
@@ -143,6 +147,7 @@ Skill ini dapat dijalankan dari direktori kerja mana pun. Agen harus menyelesaik
 
 Contoh eksekusi:
 - **Konfigurasi Proyek**: `python3 <SAQA_ROOT>/cli.py config --project-root .`
+- **Validasi Kesiapan Tiket Jira**: `python3 <SAQA_ROOT>/cli.py jira validate <ISSUE_KEY> --project-root .`
 - **Setujui Uji**: `python3 <SAQA_ROOT>/cli.py approve <path_to_test_case.md> --project-root .`
 - **Jalankan Uji**: `python3 <SAQA_ROOT>/cli.py run <path_to_test_case.md> --no-publish --project-root .`
 - **Diagnosa Run**: `python3 <SAQA_ROOT>/cli.py diagnose <run_id> [--attach "<analysis>"] --project-root .`
