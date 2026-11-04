@@ -16,7 +16,8 @@ from runner.adapters.jira import (
     extract_text_from_description,
     extract_test_case_references,
     extract_qa_scenario_block,
-    format_jira_verdict_comment
+    format_jira_verdict_comment,
+    publish_jira_artifacts
 )
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
@@ -170,9 +171,21 @@ def cmd_publish(args):
     project_root = Path(args.project_root).resolve()
     run_id = args.run_id
     force = getattr(args, "force", False)
+    jira_issue = getattr(args, "jira_issue", None)
     print(f"📤 Mencoba publikasi ulang artefak untuk Run ID: {run_id} (force={force})")
     pub_result = publish_artifacts(run_id, force=force, project_root=project_root)
     print(json.dumps(pub_result, indent=2))
+
+    if jira_issue:
+        try:
+            client = get_jira_client(project_root)
+            res_j = publish_jira_artifacts(run_id, jira_issue.strip().upper(), client, project_root, drive_info=pub_result, force=force)
+            print(f"✅ Publikasi ke tiket Jira {jira_issue} selesai:")
+            print(json.dumps(res_j, indent=2))
+        except Exception as e_j:
+            print(f"❌ Gagal mempublikasikan ke Jira {jira_issue}: {str(e_j)}")
+            return 1
+
     return 0 if pub_result.get("published") else 1
 
 def get_jira_client(project_root: Path) -> JiraClient:
@@ -313,29 +326,15 @@ def cmd_jira_process(args):
             if drive_outputs:
                 drive_info = publish_artifacts(run_id, project_root=project_root)
 
-            # Upload attachments to Jira issue jika jira_comment dikonfigurasi
+            # Upload attachments dan komentar ke Jira secara idempoten
             jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
-            if jira_outputs or not proj_cfg.get("outputs"): # Default aktif jika memanggil subperintah jira
-                uploaded_attachments = []
-                if docx_path.exists():
-                    try:
-                        att_docx = client.attach_file(issue_key, docx_path)
-                        uploaded_attachments.extend(att_docx)
-                    except Exception as e_docx:
-                        print(f"⚠️  Gagal melampirkan DOCX ke Jira: {str(e_docx)}")
-
-                video_path = run_dir / "evidence.webm"
-                if video_path.exists():
-                    try:
-                        att_vid = client.attach_file(issue_key, video_path)
-                        uploaded_attachments.extend(att_vid)
-                    except Exception as e_vid:
-                        print(f"⚠️  Gagal melampirkan video ke Jira: {str(e_vid)}")
-
-                # Post comment to Jira
-                comment_body = format_jira_verdict_comment(meta, uploaded_attachments, drive_info)
-                client.post_comment(issue_key, comment_body)
-                print(f"✅ Laporan dan bukti attachment berhasil dikirim ke tiket Jira {issue_key}")
+            if jira_outputs or not proj_cfg.get("outputs"): # Default aktif saat memanggil subperintah jira
+                try:
+                    res_jira = publish_jira_artifacts(run_id, issue_key, client, project_root, drive_info=drive_info)
+                    print(f"✅ Laporan dan bukti attachment berhasil dikirim ke tiket Jira {issue_key} (Comment ID: {res_jira.get('comment_id')})")
+                except Exception as e_jira:
+                    print(f"⚠️  Gagal mempublikasikan hasil ke tiket Jira: {str(e_jira)}")
+                    return 1
 
         return 0
     except Exception as e:
@@ -401,8 +400,9 @@ def main():
     parser_run.set_defaults(func=cmd_run)
 
     # Subcommand: publish
-    parser_pub = subparsers.add_parser("publish", parents=[common_parser], help="Publikasikan artefak ke Google Drive")
+    parser_pub = subparsers.add_parser("publish", parents=[common_parser], help="Publikasikan artefak ke Google Drive atau Jira")
     parser_pub.add_argument("run_id", help="ID Run yang akan dipublikasikan")
+    parser_pub.add_argument("--jira-issue", help="Key tiket Jira untuk mempublikasikan bukti ke Jira")
     parser_pub.add_argument("--force", action="store_true", help="Paksa pembaruan dokumen dan pemindahan folder")
     parser_pub.set_defaults(func=cmd_publish)
 

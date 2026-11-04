@@ -63,7 +63,7 @@ class TestJiraAdapter(unittest.TestCase):
             (tc_dir / "TC-001-login-valid.md").write_text("# TC-001", encoding="utf-8")
             (tc_dir / "TC-002-login-view.md").write_text("# TC-002", encoding="utf-8")
 
-            desc = "Mohon jalankan pengujian untuk tiket ini: TC-001 dan juga TC-002."
+            desc = "h3. Test Cases\n- TC-001\n- TC-002"
             refs = extract_test_case_references(desc, tc_dir)
             self.assertEqual(len(refs), 2)
             self.assertEqual(refs[0].name, "TC-001-login-valid.md")
@@ -76,7 +76,7 @@ class TestJiraAdapter(unittest.TestCase):
             (tc_dir / "TC-001-login-v1.md").write_text("# TC-001 v1", encoding="utf-8")
             (tc_dir / "TC-001-login-v2.md").write_text("# TC-001 v2", encoding="utf-8")
 
-            desc = "Test case: TC-001"
+            desc = "h3. Test Cases\n- TC-001"
             with self.assertRaises(ValueError) as ctx:
                 extract_test_case_references(desc, tc_dir)
             self.assertIn("Referensi ambigu", str(ctx.exception))
@@ -84,7 +84,7 @@ class TestJiraAdapter(unittest.TestCase):
     def test_extract_test_case_references_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tc_dir = Path(tmpdir)
-            desc = "Test case: TC-999"
+            desc = "h3. Test Cases\n- TC-999"
             with self.assertRaises(FileNotFoundError) as ctx:
                 extract_test_case_references(desc, tc_dir)
             self.assertIn("tidak ditemukan", str(ctx.exception))
@@ -209,7 +209,7 @@ class TestJiraAdapter(unittest.TestCase):
             "fields": {
                 "summary": "Process test",
                 "status": {"name": "In Testing"},
-                "description": "Test Cases: TC-001"
+                "description": "h3. Test Cases\n- TC-001"
             }
         }
         mock_run.return_value = {
@@ -242,6 +242,60 @@ class TestJiraAdapter(unittest.TestCase):
             mock_pub.assert_not_called()
             mock_attach.assert_not_called()
             mock_comment.assert_not_called()
+
+    @patch("runner.adapters.jira.JiraClient.attach_file")
+    @patch("runner.adapters.jira.JiraClient.post_comment")
+    def test_publish_jira_artifacts_idempotent(self, mock_comment, mock_attach):
+        mock_attach.return_value = [{"id": "att_1", "filename": "report.docx"}]
+        mock_comment.return_value = {"id": "cmt_100"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_IDEMPOTENT"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_IDEMPOTENT",
+                "test_case_id": "TC-001",
+                "title": "Idempotent run",
+                "verdict": "PASSED"
+            }), encoding="utf-8")
+            (run_dir / "report.docx").write_bytes(b"PK0304")
+
+            from runner.adapters.jira import publish_jira_artifacts
+            # 1. Panggilan pertama: harus mengunggah file dan komentar
+            res1 = publish_jira_artifacts("RUN_IDEMPOTENT", "MED-500", self.client, proj_dir)
+            self.assertTrue(res1["published"])
+            self.assertEqual(res1["comment_id"], "cmt_100")
+            mock_attach.assert_called_once()
+            mock_comment.assert_called_once()
+
+            # 2. Panggilan kedua (tanpa force): tidak boleh memanggil attach atau comment lagi (idempoten)
+            mock_attach.reset_mock()
+            mock_comment.reset_mock()
+            res2 = publish_jira_artifacts("RUN_IDEMPOTENT", "MED-500", self.client, proj_dir, force=False)
+            self.assertTrue(res2["published"])
+            mock_attach.assert_not_called()
+            mock_comment.assert_not_called()
+
+    def test_extract_references_scoped_to_test_cases_heading_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tc_dir = Path(tmpdir)
+            (tc_dir / "TC-001-login.md").write_text("# TC-001", encoding="utf-8")
+            (tc_dir / "TC-002-logout.md").write_text("# TC-002", encoding="utf-8")
+
+            # TC-002 disebut di narasi umum, tetapi HANYA TC-001 di bawah Test Cases
+            desc = (
+                "Perbaikan bug yang sebelumnya terjadi di TC-002.\n\n"
+                "h3. Test Cases\n"
+                "- TC-001\n\n"
+                "h3. Catatan\n"
+                "Selesai."
+            )
+            from runner.adapters.jira import extract_test_case_references
+            refs = extract_test_case_references(desc, tc_dir)
+            self.assertEqual(len(refs), 1)
+            self.assertEqual(refs[0].name, "TC-001-login.md")
 
 if __name__ == "__main__":
     unittest.main()

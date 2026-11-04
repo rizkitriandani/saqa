@@ -138,17 +138,22 @@ def extract_text_from_description(raw_desc: Any) -> str:
 
 def extract_test_case_references(description_text: str, test_cases_dir: Path) -> List[Path]:
     """
-    Mengekstrak referensi kasus uji (misal: TC-001) dari bagian 'Test Cases' pada deskripsi tiket.
-    Jika tidak ada heading 'Test Cases', mencari pola TC-xxx di seluruh teks deskripsi.
-    Urutan kemunculan dipertahankan, deduplikasi case-insensitive.
+    Mengekstrak referensi kasus uji (misal: TC-001) HANYA dari bagian 'Test Cases' pada deskripsi tiket.
+    Fail-closed:
+    - Tidak mencari di luar heading 'Test Cases' (mencegah salah deteksi teks bebas).
+    - Tidak membuat direktori selama pembacaan.
+    - Urutan kemunculan dipertahankan, deduplikasi case-insensitive.
+    - Setiap ID wajib menemukan tepat 1 berkas yang cocok di test_cases_dir.
     """
     if not test_cases_dir.exists():
-        test_cases_dir.mkdir(parents=True, exist_ok=True)
+        return []
 
-    # 1. Isolasi bagian 'Test Cases' jika ada
-    m_section = re.search(r'(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases)(.*?)(?=(?:###?\s*|h[1-6]\.\s*|$))', description_text, re.DOTALL | re.IGNORECASE)
-    search_target = m_section.group(1) if m_section else description_text
+    # Hanya isolasi bagian di bawah heading atau label 'Test Cases'
+    m_section = re.search(r'(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases|Test\s+Cases\s*:?)(.*?)(?=(?:###?\s*|h[1-6]\.\s*|$))', description_text, re.DOTALL | re.IGNORECASE)
+    if not m_section:
+        return []
 
+    search_target = m_section.group(1)
     raw_matches = re.findall(r'\b(TC-\d+)\b', search_target, re.IGNORECASE)
     seen = set()
     ordered_ids = []
@@ -234,3 +239,65 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
     lines.append("")
     lines.append(f"_Dijalankan secara otomatis oleh SAQA Engine pada {meta.get('timestamp')}_")
     return "\n".join(lines)
+
+
+def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, project_root: Path, drive_info: dict = None, force: bool = False) -> Dict[str, Any]:
+    """
+    Mempublikasikan artefak pengujian (DOCX, video) dan komentar ke tiket Jira secara idempoten.
+    - Menyimpan ID attachment dan komentar segera ke metadata.json setelah setiap aksi.
+    - Retry tidak menduplikasi file yang sudah berhasil diunggah sebelumnya.
+    """
+    safe_run_id = Path(run_id).name
+    run_dir = project_root / "artifacts" / safe_run_id
+    meta_path = run_dir / "metadata.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"metadata.json untuk {safe_run_id} tidak ditemukan.")
+
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    jira_status = meta.setdefault("jira_publish_status", {
+        "issue_key": issue_key,
+        "published": False,
+        "attachments": {},
+        "comment_id": None
+    })
+
+    if jira_status.get("published") and not force:
+        return jira_status
+
+    docx_path = run_dir / "report.docx"
+    video_path = run_dir / "evidence.webm"
+
+    # 1. Upload DOCX jika belum tercatat di status
+    if docx_path.exists():
+        docx_name = docx_path.name
+        if docx_name not in jira_status["attachments"] or force:
+            att_docx = client.attach_file(issue_key, docx_path)
+            if att_docx:
+                jira_status["attachments"][docx_name] = att_docx[0].get("id")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+
+    # 2. Upload Video jika belum tercatat di status
+    if video_path.exists():
+        video_name = video_path.name
+        if video_name not in jira_status["attachments"] or force:
+            att_vid = client.attach_file(issue_key, video_path)
+            if att_vid:
+                jira_status["attachments"][video_name] = att_vid[0].get("id")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+
+    # 3. Post Komentar Ringkasan jika belum pernah diposting
+    if not jira_status.get("comment_id") or force:
+        attachment_summary = [{"filename": k} for k in jira_status["attachments"].keys()]
+        comment_body = format_jira_verdict_comment(meta, attachment_summary, drive_info)
+        res_cmt = client.post_comment(issue_key, comment_body)
+        jira_status["comment_id"] = res_cmt.get("id")
+
+    jira_status["published"] = True
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    return jira_status
