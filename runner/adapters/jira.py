@@ -117,7 +117,8 @@ class JiraClient:
 def extract_text_from_description(raw_desc: Any) -> str:
     """
     Mengekstrak teks murni dari field description Jira.
-    Mendukung format string (v2) dan format Atlassian Document Format (ADF v3).
+    Mendukung format string (v2/wiki markup) dan format Atlassian Document Format (ADF v3)
+    dengan rekonstruksi presisi untuk heading (#), table (| col |), codeblock, dan bullet list.
     """
     if not raw_desc:
         return ""
@@ -126,15 +127,61 @@ def extract_text_from_description(raw_desc: Any) -> str:
 
     if isinstance(raw_desc, dict) and raw_desc.get("type") == "doc":
         chunks = []
+
+        def _get_cell_text(node):
+            cell_chunks = []
+            def walk_cell(n):
+                if isinstance(n, dict):
+                    if n.get("type") == "text":
+                        cell_chunks.append(n.get("text", ""))
+                    for ch in n.get("content", []):
+                        walk_cell(ch)
+                elif isinstance(n, list):
+                    for item in n:
+                        walk_cell(item)
+            walk_cell(node)
+            return " ".join("".join(cell_chunks).split())
+
         def walk(node):
             if isinstance(node, dict):
                 ntype = node.get("type")
                 if ntype == "text":
                     chunks.append(node.get("text", ""))
                 elif ntype == "heading":
-                    chunks.append("\n\n### ")
-                elif ntype in ["paragraph", "listItem"]:
+                    lvl = node.get("attrs", {}).get("level", 3)
+                    prefix = "#" * lvl
+                    chunks.append(f"\n\n{prefix} ")
+                    for child in node.get("content", []):
+                        walk(child)
                     chunks.append("\n")
+                    return
+                elif ntype == "codeBlock":
+                    chunks.append("\n```\n")
+                    for child in node.get("content", []):
+                        walk(child)
+                    chunks.append("\n```\n")
+                    return
+                elif ntype == "table":
+                    chunks.append("\n")
+                    for row_idx, row in enumerate(node.get("content", [])):
+                        if isinstance(row, dict) and row.get("type") == "tableRow":
+                            cells = []
+                            is_header = False
+                            for cell in row.get("content", []):
+                                if cell.get("type") == "tableHeader":
+                                    is_header = True
+                                cells.append(_get_cell_text(cell))
+                            chunks.append("| " + " | ".join(cells) + " |\n")
+                            if is_header and row_idx == 0:
+                                sep = [" :--- " for _ in cells]
+                                chunks.append("|" + "|".join(sep) + "|\n")
+                    chunks.append("\n")
+                    return
+                elif ntype == "listItem":
+                    chunks.append("\n- ")
+                elif ntype == "paragraph":
+                    chunks.append("\n")
+
                 for child in node.get("content", []):
                     walk(child)
             elif isinstance(node, list):
@@ -151,13 +198,17 @@ def extract_test_case_references(description_text: str, test_cases_dir: Path) ->
     """
     Mengekstrak referensi kasus uji (misal: TC-001) HANYA dari bagian 'Test Cases' pada deskripsi tiket.
     Fail-closed:
-    - Heading 'Test Cases' terikat pada awal baris (mencegah salah deteksi di tengah kalimat).
+    - Heading 'Test Cases' terikat pada awal baris (mendukung format #, ##, ###, h1-h6, atau Test Cases:).
     - Berhenti pada heading berikutnya.
     - Urutan kemunculan dipertahankan, deduplikasi case-insensitive.
     - Setiap ID wajib menemukan tepat 1 berkas yang cocok di test_cases_dir.
     """
     # Heading terikat awal baris
-    m_section = re.search(r'(?:^|\n)\s*(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases|Test\s+Cases\s*:?)(.*?)(?=(?:\n\s*###?|\n\s*h[1-6]\.|$))', description_text, re.DOTALL | re.IGNORECASE)
+    m_section = re.search(
+        r'(?:^|\n)\s*(?:#{1,6}\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases|Test\s+Cases\s*:?)(.*?)(?=(?:\n\s*#{1,6}|\n\s*h[1-6]\.|$))',
+        description_text,
+        re.DOTALL | re.IGNORECASE
+    )
     if not m_section:
         return []
 
@@ -196,8 +247,13 @@ def extract_test_case_references(description_text: str, test_cases_dir: Path) ->
 def extract_qa_scenario_block(description_text: str) -> Optional[str]:
     """
     Mengekstrak blok skenario bahasa alami di bawah heading 'QA Scenario' pada deskripsi tiket.
+    Mendukung format heading #, ##, ###, h1-h6, atau QA Scenario:
     """
-    m = re.search(r'(?:###?\s*QA\s+Scenario|h[1-6]\.\s*QA\s+Scenario)(.*?)(?=(?:###?\s*|h[1-6]\.\s*|$))', description_text, re.DOTALL | re.IGNORECASE)
+    m = re.search(
+        r'(?:^|\n)\s*(?:#{1,6}\s*QA\s+Scenario|h[1-6]\.\s*QA\s+Scenario|QA\s+Scenario\s*:?)(.*?)(?=(?:\n\s*#{1,6}|\n\s*h[1-6]\.|$))',
+        description_text,
+        re.DOTALL | re.IGNORECASE
+    )
     if m:
         scenario = m.group(1).strip()
         if scenario:

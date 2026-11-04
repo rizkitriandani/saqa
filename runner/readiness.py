@@ -19,12 +19,14 @@ from runner.adapters.jira import (
 
 class ReasonCode:
     READY = "READY"
+    INLINE_TEST_CASE_DETECTED = "INLINE_TEST_CASE_DETECTED"
     MISSING_TEST_CASE_REFERENCE = "MISSING_TEST_CASE_REFERENCE"
     TEST_CASE_NOT_FOUND = "TEST_CASE_NOT_FOUND"
     TEST_CASE_NOT_APPROVED = "TEST_CASE_NOT_APPROVED"
     AMBIGUOUS_TEST_CASE_REFERENCE = "AMBIGUOUS_TEST_CASE_REFERENCE"
     CONTRACT_VALIDATION_FAILED = "CONTRACT_VALIDATION_FAILED"
     RAW_SCENARIO_DETECTED = "RAW_SCENARIO_DETECTED"
+    EMPTY_DESCRIPTION = "EMPTY_DESCRIPTION"
     STATUS_SKIPPED = "STATUS_SKIPPED"
 
 class ActionRequired:
@@ -35,14 +37,31 @@ class ActionRequired:
     FIX_CONTRACT = "FIX_CONTRACT"
     NO_OP = "NO_OP"
 
+def is_scenario_like_text(text: str) -> bool:
+    """Mengecek apakah teks deskripsi memuat pola instruksi pengujian/skenario bahasa alami."""
+    keywords = r'\b(step|langkah|alur|skenario|scenario|klik|click|buka|navigate|fill|isi|expected|hasil|aspek|login)\b'
+    matches = re.findall(keywords, text, re.IGNORECASE)
+    return len(matches) >= 2
+
+def is_full_inline_test_case(desc_text: str) -> bool:
+    """Mengecek apakah teks deskripsi memuat spesifikasi kasus uji Markdown lengkap."""
+    has_id = bool(re.search(r'(?:^|\n)\s*(?:#\s*TC-\d+|\*\*\s*ID\s*\*\*\s*:\s*TC-\d+)', desc_text, re.IGNORECASE))
+    has_steps = bool(re.search(r'Test\s+Steps|Langkah\s+Pengujian', desc_text, re.IGNORECASE))
+    has_expected = bool(re.search(r'Expected\s+Results|Hasil\s+yang\s+Diharapkan', desc_text, re.IGNORECASE))
+    return (has_id or has_steps) and has_expected
+
 def evaluate_ticket_readiness(
     description_raw: Any,
     project_root: Path,
-    test_cases_dir_rel: str = "test-cases"
+    test_cases_dir_rel: str = "test-cases",
+    issue_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluasi kesiapan tiket secara terstruktur dan fail-closed.
-    Mengembalikan payload kesiapan dengan reason_code dan action_required yang jelas.
+    Mendukung 3 sumber masukan:
+    1. Referensi berkas Git repo di bawah 'Test Cases' (misal: - TC-001)
+    2. Inline full test case Markdown yang ditempel langsung di deskripsi tiket Jira
+    3. Blok 'QA Scenario' bahasa alami atau teks deskripsi bebas untuk klarifikasi
     """
     desc_text = extract_text_from_description(description_raw)
     test_cases_dir = project_root / test_cases_dir_rel
@@ -56,10 +75,79 @@ def evaluate_ticket_readiness(
         "unapproved_files": [],
         "missing_ids": [],
         "raw_scenario": None,
-        "referenced_ids": []
+        "referenced_ids": [],
+        "candidate_summary": None,
+        "candidate_source_type": None # "inline_markdown", "repo_reference", "raw_scenario", "empty"
     }
 
-    # 1. Cek apakah ada referensi TC-xxx di bawah Test Cases
+    if not desc_text.strip():
+        result["reason_code"] = ReasonCode.EMPTY_DESCRIPTION
+        result["candidate_source_type"] = "empty"
+        result["details"] = "Deskripsi tiket kosong. Perlu sesi klarifikasi untuk menyusun skenario pengujian."
+        return result
+
+    # 1. Jalur A: Deteksi Kasus Uji Markdown Lengkap (Inline Test Case)
+    if is_full_inline_test_case(desc_text):
+        result["candidate_source_type"] = "inline_markdown"
+        inlined_dir = test_cases_dir / "inlined"
+        inlined_dir.mkdir(parents=True, exist_ok=True)
+        m_id = re.search(r'\b(TC-\d+)\b', desc_text, re.IGNORECASE)
+        tc_id_str = m_id.group(1).upper() if m_id else (issue_key or "INLINE")
+        file_prefix = f"{issue_key}-{tc_id_str}" if issue_key else tc_id_str
+        inline_file = inlined_dir / f"{file_prefix}.md"
+        inline_file.write_text(desc_text, encoding="utf-8")
+
+        parsed = parse_markdown_test_case(inline_file)
+        c_errors = validate_test_case_contract(parsed)
+        if c_errors:
+            result["reason_code"] = ReasonCode.CONTRACT_VALIDATION_FAILED
+            result["action_required"] = ActionRequired.FIX_CONTRACT
+            result["details"] = f"Validasi kontrak kasus uji inline gagal: {'; '.join(c_errors)}"
+            result["candidate_summary"] = {
+                "id": parsed.get("id"),
+                "title": parsed.get("title"),
+                "steps_count": len(parsed.get("steps", [])),
+                "contract_errors": c_errors
+            }
+            return result
+
+        app_status = parsed.get("approval_status", "pending").lower()
+        app_hash = parsed.get("approval_hash")
+        canon_hash = compute_canonical_content_hash(parsed.get("raw_content", ""))
+
+        result["candidate_summary"] = {
+            "id": parsed.get("id"),
+            "title": parsed.get("title"),
+            "target_url": parsed.get("target_url"),
+            "steps_count": len(parsed.get("steps", [])),
+            "expected_results": parsed.get("expected_results", []),
+            "approval_status": app_status
+        }
+
+        if app_status == "approved" and app_hash and app_hash == canon_hash:
+            result["ready"] = True
+            result["reason_code"] = ReasonCode.READY
+            result["action_required"] = ActionRequired.RUN
+            result["test_case_paths"] = [str(inline_file.relative_to(project_root))]
+            result["referenced_ids"] = [parsed.get("id", tc_id_str)]
+            result["details"] = f"Kasus uji inline '{parsed.get('id')}' terverifikasi valid dan disetujui."
+            return result
+        else:
+            result["reason_code"] = ReasonCode.TEST_CASE_NOT_APPROVED
+            result["action_required"] = ActionRequired.WAIT_APPROVAL
+            result["unapproved_files"] = [{
+                "file": str(inline_file.relative_to(project_root)),
+                "id": parsed.get("id", tc_id_str),
+                "status": app_status,
+                "reason": "Approval hash mismatch atau status pending"
+            }]
+            result["details"] = (
+                f"Kasus uji inline '{parsed.get('id')}' ditemukan pada deskripsi tiket namun "
+                "berstatus 'pending' (membutuhkan persetujuan manusia sebelum dijalankan)."
+            )
+            return result
+
+    # 2. Jalur B: Cek Referensi TC-xxx di bawah Test Cases
     try:
         refs = extract_test_case_references(desc_text, test_cases_dir)
     except ValueError as ve:
@@ -68,7 +156,6 @@ def evaluate_ticket_readiness(
         result["details"] = str(ve)
         return result
     except FileNotFoundError as fe:
-        # Salah satu ID tidak ditemukan di folder test-cases
         missing_id = ""
         m = re.search(r"'(TC-\d+)'", str(fe))
         if m:
@@ -82,8 +169,8 @@ def evaluate_ticket_readiness(
         )
         return result
 
-    # 2. Jika ada referensi berkas yang valid
     if refs:
+        result["candidate_source_type"] = "repo_reference"
         result["referenced_ids"] = [f.stem.split("-")[0] for f in refs]
         unapproved = []
         contract_errors = []
@@ -123,7 +210,6 @@ def evaluate_ticket_readiness(
             )
             return result
 
-        # Seluruh berkas terverifikasi siap dieksekusi!
         result["ready"] = True
         result["reason_code"] = ReasonCode.READY
         result["action_required"] = ActionRequired.RUN
@@ -131,24 +217,29 @@ def evaluate_ticket_readiness(
         result["details"] = f"Seluruh {len(refs)} kasus uji terverifikasi valid dan disetujui."
         return result
 
-    # 3. Jika tidak ada referensi TC-xxx, cek apakah ada blok QA Scenario bahasa alami
+    # 3. Jalur C: Blok QA Scenario bahasa alami atau deskripsi bebas yang menyerupai skenario
     scenario = extract_qa_scenario_block(desc_text)
+    if not scenario and is_scenario_like_text(desc_text):
+        # Jika tidak ada heading khusus tapi ada teks deskripsi yang memuat alur langkah
+        scenario = desc_text.strip()
+
     if scenario:
+        result["candidate_source_type"] = "raw_scenario"
         result["reason_code"] = ReasonCode.RAW_SCENARIO_DETECTED
         result["action_required"] = ActionRequired.INITIATE_CLARIFICATION
         result["raw_scenario"] = scenario
         result["details"] = (
-            "Ditemukan blok 'QA Scenario' bahasa alami. "
-            "Sistem perlu memicu sesi klarifikasi AI (grilling) untuk memformulasikan kasus uji terstruktur."
+            "Skenario pengujian terdeteksi pada deskripsi tiket. "
+            "Sistem perlu mengonfirmasi apakah skenario ini yang ingin dijalankan atau ada bentuk lain."
         )
         return result
 
-    # 4. Tiket benar-benar kosong dari skenario pengujian
     result["reason_code"] = ReasonCode.MISSING_TEST_CASE_REFERENCE
+    result["candidate_source_type"] = "empty"
     result["action_required"] = ActionRequired.INITIATE_CLARIFICATION
     result["details"] = (
-        "Deskripsi tiket tidak memuat bagian 'Test Cases' maupun 'QA Scenario'. "
-        "Perlu sesi klarifikasi untuk menggali kebutuhan pengujian dari tim QA."
+        "Deskripsi tiket tidak memuat spesifikasi kasus uji yang terstruktur. "
+        "Perlu sesi klarifikasi untuk menyusun skenario pengujian."
     )
     return result
 

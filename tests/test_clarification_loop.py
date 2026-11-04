@@ -238,5 +238,57 @@ class TestClarificationLoop(unittest.TestCase):
         self.assertTrue(draft_file.exists())
         self.assertIn("Langkah 1: Akses dev bcalife", draft_file.read_text())
 
+    def test_evaluate_ticket_readiness_inline_full_markdown(self):
+        # Menguji jika deskripsi tiket Jira adalah dokumen Markdown lengkap
+        tc_text = (
+            "# TC-001: Staff Login\n\n"
+            "- **ID**: TC-001\n"
+            "- **Title**: Staff Login Test\n"
+            "- **Type**: Positive\n"
+            "- **Execution Mode**: deterministic\n"
+            "- **Approval Status**: approved\n"
+            "- **Target URL**: https://example.com/login\n\n"
+            "## Test Steps\n"
+            "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+            "| :--- | :--- | :--- | :--- | :--- |\n"
+            "| 1 | navigate | https://example.com/login | - | Loaded |\n\n"
+            "## Expected Results\n"
+            "- url contains \"/dashboard\"\n"
+        )
+        h = compute_canonical_content_hash(tc_text)
+        tc_signed = tc_text.replace(
+            "- **Approval Status**: approved",
+            f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+        )
+
+        res = evaluate_ticket_readiness(tc_signed, self.proj_dir, issue_key="TRACKING-130")
+        self.assertTrue(res["ready"])
+        self.assertEqual(res["reason_code"], ReasonCode.READY)
+        self.assertEqual(res["action_required"], ActionRequired.RUN)
+        self.assertEqual(res["candidate_source_type"], "inline_markdown")
+        self.assertIsNotNone(res["candidate_summary"])
+        self.assertEqual(res["candidate_summary"]["id"], "TC-001")
+        self.assertTrue((self.tc_dir / "inlined" / "TRACKING-130-TC-001.md").exists())
+
+    def test_format_clarification_message_includes_three_options(self):
+        from runner.adapters.notifier import format_clarification_message
+        mock_readiness = {
+            "reason_code": ReasonCode.TEST_CASE_NOT_APPROVED,
+            "candidate_summary": {
+                "id": "TC-001",
+                "title": "Staff Authentication",
+                "target_url": "https://dev.example.com",
+                "steps_count": 4,
+                "expected_results": ['heading contains "Dashboard"']
+            }
+        }
+        mock_session = {"session_id": "clarify_123"}
+        msg = format_clarification_message("MED-900", mock_readiness, mock_session)
+        self.assertIn("MED-900", msg)
+        self.assertIn("Staff Authentication", msg)
+        self.assertIn("Approve & Run", msg)
+        self.assertIn("Salin / tempel teks skenario baru", msg)
+        self.assertIn("Lampirkan berkas", msg)
+
 if __name__ == "__main__":
     unittest.main()

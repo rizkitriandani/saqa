@@ -59,44 +59,88 @@ def send_discord_webhook(webhook_url: str, text: str) -> bool:
     return _send_http_json(webhook_url, payload)
 
 def format_clarification_message(issue_key: str, readiness: dict, session: dict) -> str:
-    """Menyusun pesan klarifikasi/grilling yang ramah untuk dikirim ke chat tim QA."""
+    """
+    Menyusun pesan klarifikasi/grilling yang ramah untuk dikirim ke chat tim QA.
+    Merangkum isi tiket yang dibaca dan memberikan 3 pilihan sumber yang fleksibel:
+    1. Pakai deskripsi tiket langsung
+    2. Copas skenario baru di chat
+    3. Lampirkan berkas .txt / .md
+    """
     reason = readiness.get("reason_code", "UNKNOWN")
-    details = readiness.get("details", "")
+    candidate_summary = readiness.get("candidate_summary")
+    raw_scenario = readiness.get("raw_scenario")
+    unapproved = readiness.get("unapproved_files", [])
     session_id = session.get("session_id", "-")
 
     lines = [
         f"🔔 *[SAQA Clarification Needed]* Tiket `{issue_key}`",
-        f"Tiket baru saja masuk ke antrean pengujian, namun belum memiliki spesifikasi kasus uji yang siap dieksekusi.",
-        f"• *Status Kesiapan*: `{reason}`",
-        f"• *Catatan*: {details}",
-        ""
+        f"Tiket baru saja masuk ke antrean pengujian, dan SAQA membaca deskripsi tiket untuk menentukan kasus uji."
     ]
 
-    raw_scenario = readiness.get("raw_scenario")
-    if raw_scenario:
+    # Kasus A: Terdeteksi draf / skenario lengkap pada deskripsi tiket
+    if candidate_summary and isinstance(candidate_summary, dict):
         lines.extend([
-            "*Skenario Terdeteksi pada Tiket:*",
-            "```text",
-            raw_scenario[:300] + ("..." if len(raw_scenario) > 300 else ""),
-            "```",
-            ""
+            "",
+            "📋 *Kandidat Kasus Uji Terdeteksi pada Deskripsi Tiket:*",
+            f"• *ID*: `{candidate_summary.get('id', '-')}`",
+            f"• *Judul*: {candidate_summary.get('title', '-')}",
+            f"• *Target URL*: `{candidate_summary.get('target_url', '-')}`",
+            f"• *Jumlah Langkah*: {candidate_summary.get('steps_count', 0)} langkah",
+        ])
+        if candidate_summary.get("expected_results"):
+            lines.append("• *Ekspektasi Kelulusan*:")
+            for exp in candidate_summary["expected_results"][:3]:
+                lines.append(f"  - `{exp}`")
+
+        lines.extend([
+            "",
+            "❓ *Apakah ini test case yang ingin dijalankan?*",
+            "Pilih opsi Anda:",
+            "1️⃣ Ketik *'Approve & Run'* (atau *'Ya'*) untuk mengesahkan dan menjalankan deskripsi ini langsung.",
+            "2️⃣ Salin / tempel teks skenario baru langsung di chat ini.",
+            "3️⃣ Lampirkan berkas `.txt` atau `.md` kasus uji pada chat ini."
         ])
 
-    missing_ids = readiness.get("missing_ids")
-    if missing_ids:
-        lines.append(f"• Kasus uji yang belum ada: `{', '.join(missing_ids)}`")
+    # Kasus B: Terdeteksi teks narasi skenario bahasa alami
+    elif raw_scenario:
+        lines.extend([
+            "",
+            "📝 *Skenario Teks Terdeteksi pada Tiket:*",
+            "```text",
+            raw_scenario[:350] + ("..." if len(raw_scenario) > 350 else ""),
+            "```",
+            "",
+            "❓ *Bagaimana Anda ingin melanjutkan?*",
+            "1️⃣ Balas *'Gunakan skenario ini'* untuk meminta AI menyusun draf langkah bakunya.",
+            "2️⃣ Salin / tempel teks skenario yang lebih lengkap di chat ini.",
+            "3️⃣ Lampirkan berkas `.txt` atau `.md` kasus uji siap pakai."
+        ])
 
-    unapproved = readiness.get("unapproved_files")
-    if unapproved:
-        lines.append(f"• Kasus uji belum disetujui: `{', '.join([u['file'] for u in unapproved])}`")
-        lines.append(f"Jalankan `/saqa approve <file>` jika skenario sudah ditinjau manusia.")
-        lines.append("")
+    # Kasus C: File referensi ada di repo tapi belum di-approve
+    elif unapproved:
+        lines.extend([
+            "",
+            f"⚠️ *Kasus uji ditemukan di repositori namun berstatus 'pending':*",
+            f"• Berkas: `{', '.join([u['file'] for u in unapproved])}`",
+            "",
+            "Ketik *'Approve & Run'* untuk mengesahkan dan langsung mengeksekusi berkas tersebut."
+        ])
+
+    # Kasus D: Tiket kosong / tanpa referensi
+    else:
+        lines.extend([
+            "",
+            "⚠️ *Deskripsi tiket belum memuat skenario pengujian yang dapat dikenali.*",
+            "",
+            "Silakan pilih cara untuk memberikan test case:",
+            "1️⃣ Salin / tempel langkah pengujian langsung di chat ini.",
+            "2️⃣ Lampirkan berkas `.txt` atau `.md` kasus uji.",
+            "3️⃣ Balas chat ini untuk mulai sesi tanya-jawab (grilling) bersama AI."
+        ])
 
     lines.extend([
-        "💬 *Bantuan AI Assistant (Grilling Loop):*",
-        f"Balas pesan ini atau tanyakan ke bot Hermes/Pi:",
-        f"> _\"Bantu saya menyusun dan verifikasi test case untuk tiket {issue_key}\"_",
-        f"Sesi ID: `{session_id}`"
+        "",
+        f"_Sesi Klarifikasi ID: `{session_id}`_"
     ])
     return "\n".join(lines)
 
