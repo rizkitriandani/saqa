@@ -57,18 +57,17 @@ def extract_status_from_payload(payload: dict) -> Optional[str]:
             return s.strip()
     return None
 
-def extract_event_id_from_payload(payload: dict, raw_body: bytes) -> str:
-    """Mengekstrak event_id dari payload atau menghasilkan hash kanonikal dari body jika tidak disediakan."""
+def extract_event_id_from_payload(payload: dict) -> Optional[str]:
+    """Mengekstrak event_id eksplisit dari payload Jira atau automation."""
     candidates = [
         payload.get("event_id"),
-        payload.get("timestamp"),
         payload.get("webhookEventId"),
+        payload.get("timestamp"),
     ]
     for eid in candidates:
         if eid:
             return str(eid).strip()
-    # Fallback deterministik: hash dari payload body
-    return hashlib.sha256(raw_body).hexdigest()[:32]
+    return None
 
 def dispatch_github_actions(issue_key: str, env_vars: dict) -> Dict[str, Any]:
     """Memicu repository_dispatch pada GitHub Actions."""
@@ -274,9 +273,14 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
                 return
 
         # 5. Filter status pemicu (trigger_statuses)
-        incoming_status = extract_status_from_payload(payload)
         trigger_statuses = cfg.get("input", {}).get("trigger_statuses", [])
-        if incoming_status and trigger_statuses:
+        incoming_status = extract_status_from_payload(payload)
+        if trigger_statuses:
+            if not incoming_status:
+                self._send_json(400, {
+                    "error": "Status tiket tidak ditemukan pada payload, sementara trigger_statuses dikonfigurasi."
+                })
+                return
             matched = any(incoming_status.strip().lower() == s.strip().lower() for s in trigger_statuses)
             if not matched:
                 logger.info(f"Tiket {issue_key} berstatus '{incoming_status}'. Tidak cocok dengan trigger_statuses: {trigger_statuses}. Dilewati.")
@@ -289,7 +293,12 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
 
         # 6. Tentukan Runner Target & Enqueue Job secara Durable
         runner = self.runner_override or cfg.get("runner_target", "local")
-        event_id = extract_event_id_from_payload(payload, body_bytes)
+        event_id = extract_event_id_from_payload(payload)
+        if not event_id:
+            self._send_json(400, {
+                "error": "Field 'event_id' (atau 'webhookEventId' / 'timestamp') wajib disertakan untuk deduplikasi event."
+            })
+            return
 
         job_id, is_duplicate = enqueue_job(db_path, project_id, event_id, issue_key, runner)
         if is_duplicate:
@@ -339,25 +348,21 @@ def start_webhook_server(
     cfg = load_project_config(project_root)
     project_id = cfg.get("project_id", project_root.name)
 
-    # Reconcile job yang terinterupsi saat restart sebelumnya
+    # 1. Bind socket terlebih dahulu (fail-closed jika port bentrok atau dilarang)
+    server_address = (host, port)
+    httpd = HTTPServer(server_address, CustomHandler)
+    logger.info(f"🌐 [SAQA Webhook Server] Socket berhasil di-bind di http://{host}:{port}/jira-webhook")
+    logger.info(f"📁 Project Root: {project_root}")
+    logger.info(f"⚙️  Default Runner: {runner_override or 'from saqa.json'}")
+
+    # 2. Rekonsiliasi job yang terinterupsi saat restart sebelumnya (hanya setelah socket berhasil di-bind)
     reconcile_interrupted_jobs_on_startup(db_path, project_id)
 
-    class CustomHandler(SaqaWebhookHandler):
-        pass
-    CustomHandler.project_root = project_root
-    CustomHandler.runner_override = runner_override
-    CustomHandler.allow_unauthenticated = allow_unauthenticated
-
-    # Jalankan background worker untuk memproses antrean SQLite
+    # 3. Jalankan background worker untuk memproses antrean SQLite
     _WORKER_STOP_EVENT.clear()
     _WORKER_THREAD = threading.Thread(target=queue_worker_loop, args=(project_root, _WORKER_STOP_EVENT), daemon=True)
     _WORKER_THREAD.start()
 
-    server_address = (host, port)
-    httpd = HTTPServer(server_address, CustomHandler)
-    logger.info(f"🌐 [SAQA Webhook Server] Mendengarkan di http://{host}:{port}/jira-webhook")
-    logger.info(f"📁 Project Root: {project_root}")
-    logger.info(f"⚙️  Default Runner: {runner_override or 'from saqa.json'}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

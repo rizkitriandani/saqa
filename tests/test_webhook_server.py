@@ -137,17 +137,37 @@ class TestWebhookServer(unittest.TestCase):
         # Project key 'XYZ' di luar allowlist ['MED', 'QA'] -> 403 Forbidden
         status, body = self._post(
             "/jira-webhook",
-            {"issue_key": "XYZ-999"},
+            {"issue_key": "XYZ-999", "status": "In Testing", "event_id": "evt_allowlist_01"},
             headers={"X-Webhook-Secret": "super_secret_token_123"}
         )
         self.assertEqual(status, 403)
         self.assertIn("di luar allowlist", body.get("error", ""))
 
+    def test_missing_event_id_rejected_400(self):
+        # Request tanpa event_id wajib ditolak 400
+        status, body = self._post(
+            "/jira-webhook",
+            {"issue_key": "MED-101", "status": "In Testing"},
+            headers={"X-Webhook-Secret": "super_secret_token_123"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("event_id", body.get("error", ""))
+
+    def test_missing_status_when_trigger_statuses_configured_rejected_400(self):
+        # Request tanpa status saat trigger_statuses dikonfigurasi wajib ditolak 400
+        status, body = self._post(
+            "/jira-webhook",
+            {"issue_key": "MED-101", "event_id": "evt_no_status"},
+            headers={"X-Webhook-Secret": "super_secret_token_123"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("Status tiket tidak ditemukan", body.get("error", ""))
+
     def test_status_filter_skips_unmatched_status(self):
         # Status 'Backlog' tidak ada di trigger_statuses ['In Testing', 'In QA']
         status, body = self._post(
             "/jira-webhook",
-            {"issue_key": "MED-101", "status": "Backlog"},
+            {"issue_key": "MED-101", "status": "Backlog", "event_id": "evt_skip_01"},
             headers={"X-Webhook-Secret": "super_secret_token_123"}
         )
         self.assertEqual(status, 200)
