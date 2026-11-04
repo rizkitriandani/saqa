@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 
 SUPPORTED_CONFIG_VERSION = 1
 SUPPORTED_INPUT_TRIGGERS = {"cli"}
-SUPPORTED_INPUT_SOURCES = {"repo", "cli"}
-SUPPORTED_OUTPUT_TYPES = {"local", "google_drive"}
+SUPPORTED_INPUT_SOURCES = {"repo", "cli", "jira_issue"}
+SUPPORTED_OUTPUT_TYPES = {"local", "google_drive", "jira_comment"}
 
 def load_project_env(project_root: Path) -> Dict[str, str]:
     """
@@ -68,6 +68,10 @@ def validate_project_config(cfg: Dict[str, Any]) -> List[str]:
             f"Sumber input '{src}' belum didukung pada rilis ini. "
             f"Pilihan aktif: {sorted(list(SUPPORTED_INPUT_SOURCES))}."
         )
+    elif src == "jira_issue":
+        statuses = input_cfg.get("trigger_statuses", [])
+        if statuses and not isinstance(statuses, list):
+            errors.append("Field 'input.trigger_statuses' wajib berupa list nama status string.")
 
     outputs = cfg.get("outputs", [])
     if not outputs:

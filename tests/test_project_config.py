@@ -66,13 +66,13 @@ class TestProjectConfig(unittest.TestCase):
     def test_unsupported_output_sink_rejected_fail_closed(self):
         invalid_cfg = {
             "version": 1,
-            "project_id": "proj-jira-out",
+            "project_id": "proj-slack-out",
             "environment": {"base_url": "https://example.com"},
             "input": {"source": "repo"},
-            "outputs": [{"type": "jira_comment"}] # Belum didukung
+            "outputs": [{"type": "slack_webhook"}] # Belum didukung
         }
         errors = validate_project_config(invalid_cfg)
-        self.assertTrue(any("jira_comment" in e for e in errors))
+        self.assertTrue(any("slack_webhook" in e for e in errors))
 
     def test_create_project_config_no_overwrite_safety(self):
         with tempfile.TemporaryDirectory() as tmpdir:

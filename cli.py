@@ -10,7 +10,14 @@ sys.path.insert(0, str(repo_root))
 
 from runner.engine import run_test_case
 from runner.parser import compute_canonical_content_hash, parse_markdown_test_case, validate_test_case_contract
-from runner.config import create_project_config, load_project_config
+from runner.config import create_project_config, load_project_config, load_project_env
+from runner.adapters.jira import (
+    JiraClient,
+    extract_text_from_description,
+    extract_test_case_references,
+    extract_qa_scenario_block,
+    format_jira_verdict_comment
+)
 from reporter.docx_builder import build_docx_report
 from reporter.publisher import publish_artifacts
 
@@ -168,6 +175,165 @@ def cmd_publish(args):
     print(json.dumps(pub_result, indent=2))
     return 0 if pub_result.get("published") else 1
 
+def get_jira_client(project_root: Path) -> JiraClient:
+    env_vars = load_project_env(project_root)
+    base_url = env_vars.get("JIRA_BASE_URL", "https://medlinx.atlassian.net")
+    email = env_vars.get("JIRA_EMAIL", "").strip()
+    token = env_vars.get("JIRA_API_TOKEN", "").strip()
+
+    if not email or not token:
+        raise ValueError(
+            "Kredensial Jira (JIRA_EMAIL dan JIRA_API_TOKEN) belum disetel di .env proyek.\n"
+            "Silakan tambahkan JIRA_EMAIL=... dan JIRA_API_TOKEN=... ke dalam file .env Anda."
+        )
+    return JiraClient(base_url, email, token)
+
+def cmd_jira_inspect(args):
+    project_root = Path(args.project_root).resolve()
+    issue_key = args.issue_key.strip().upper()
+    try:
+        client = get_jira_client(project_root)
+        issue = client.get_issue(issue_key)
+        fields = issue.get("fields", {})
+        summary = fields.get("summary", "-")
+        status = fields.get("status", {}).get("name", "-")
+        desc_raw = fields.get("description", "")
+        desc_text = extract_text_from_description(desc_raw)
+
+        print(f"\n📋 [Jira Inspect] Tiket: {issue_key}")
+        print(f"   • Summary: {summary}")
+        print(f"   • Status: {status}")
+
+        test_cases_dir = project_root / "test-cases"
+        try:
+            refs = extract_test_case_references(desc_text, test_cases_dir)
+            print(f"   • Referensi Kasus Uji Ditemukan ({len(refs)}): {[r.name for r in refs]}")
+        except Exception as e:
+            print(f"   • Referensi Kasus Uji: {str(e)}")
+
+        scenario = extract_qa_scenario_block(desc_text)
+        if scenario:
+            print(f"   • QA Scenario Block Terdeteksi ({len(scenario.splitlines())} baris)")
+        return 0
+    except Exception as e:
+        print(f"❌ Gagal memeriksa tiket {issue_key}: {str(e)}")
+        return 1
+
+def cmd_jira_process(args):
+    project_root = Path(args.project_root).resolve()
+    issue_key = args.issue_key.strip().upper()
+    no_publish = getattr(args, "no_publish", False)
+
+    try:
+        client = get_jira_client(project_root)
+        proj_cfg = load_project_config(project_root)
+        issue = client.get_issue(issue_key)
+        fields = issue.get("fields", {})
+        summary = fields.get("summary", "-")
+        current_status = fields.get("status", {}).get("name", "-")
+        desc_raw = fields.get("description", "")
+        desc_text = extract_text_from_description(desc_raw)
+
+        print(f"\n🚀 [Jira Process] Memproses Tiket: {issue_key}")
+        print(f"   • Summary: {summary}")
+        print(f"   • Status Saat Ini: {current_status}")
+
+        # Cek filter status pemicu jika dikonfigurasi
+        trigger_statuses = proj_cfg.get("input", {}).get("trigger_statuses", [])
+        if trigger_statuses:
+            matched_status = any(current_status.strip().lower() == s.strip().lower() for s in trigger_statuses)
+            if not matched_status:
+                print(f"ℹ️  Tiket berstatus '{current_status}'. Status pemicu yang dikonfigurasi: {trigger_statuses}. Eksekusi dilewati.")
+                return 0
+
+        test_cases_dir = project_root / "test-cases"
+        try:
+            refs = extract_test_case_references(desc_text, test_cases_dir)
+        except Exception as ref_err:
+            print(f"⚠️  Pemeriksaan referensi kasus uji: {str(ref_err)}")
+            refs = []
+
+        if not refs:
+            scenario = extract_qa_scenario_block(desc_text)
+            if scenario:
+                draft_dir = test_cases_dir / "drafts"
+                draft_dir.mkdir(parents=True, exist_ok=True)
+                draft_file = draft_dir / f"{issue_key}-scenario.md"
+                draft_file.write_text(
+                    f"# {issue_key}: Scenario from Jira\n\n"
+                    f"- **ID**: {issue_key}\n"
+                    f"- **Title**: {summary}\n"
+                    f"- **Type**: Positive\n"
+                    f"- **Execution Mode**: deterministic\n"
+                    f"- **Approval Status**: pending\n\n"
+                    f"## Raw QA Scenario\n{scenario}\n",
+                    encoding="utf-8"
+                )
+                msg = (
+                    f"(-) *[SAQA Notice]* Skenario pengujian terdeteksi pada tiket {issue_key}. "
+                    f"Draf kasus uji dibuat di `{draft_file.relative_to(project_root)}` dengan status *pending*. "
+                    f"Mohon review dan jalankan approve sebelum pengujian dapat dieksekusi."
+                )
+                client.post_comment(issue_key, msg)
+                print(f"ℹ️  Draf kasus uji dibuat di {draft_file}. Menunggu review & approval manusia.")
+                return 0
+            else:
+                print("❌ Tidak ada referensi kasus uji (TC-xxx) maupun blok QA Scenario pada deskripsi tiket.")
+                return 1
+
+        for tc_file in refs:
+            print(f"\n▶ Menjalankan Kasus Uji: {tc_file.name}")
+            meta = run_test_case(str(tc_file), project_root=project_root)
+            run_id = meta["run_id"]
+            verdict = meta["verdict"]
+            print(f"   • Verdict: {verdict}")
+
+            # Build DOCX report
+            run_dir = project_root / "artifacts" / run_id
+            meta_path = run_dir / "metadata.json"
+            docx_path = build_docx_report(meta_path, project_root=project_root)
+
+            drive_info = None
+            if not no_publish:
+                drive_info = publish_artifacts(run_id, project_root=project_root)
+
+            # Upload attachments to Jira issue
+            uploaded_attachments = []
+            if docx_path.exists():
+                try:
+                    att_docx = client.attach_file(issue_key, docx_path)
+                    uploaded_attachments.extend(att_docx)
+                except Exception as e_docx:
+                    print(f"⚠️  Gagal melampirkan DOCX ke Jira: {str(e_docx)}")
+
+            video_path = run_dir / "evidence.webm"
+            if video_path.exists():
+                try:
+                    att_vid = client.attach_file(issue_key, video_path)
+                    uploaded_attachments.extend(att_vid)
+                except Exception as e_vid:
+                    print(f"⚠️  Gagal melampirkan video ke Jira: {str(e_vid)}")
+
+            # Post comment to Jira
+            comment_body = format_jira_verdict_comment(meta, uploaded_attachments, drive_info)
+            client.post_comment(issue_key, comment_body)
+            print(f"✅ Laporan dan bukti attachment berhasil dikirim ke tiket Jira {issue_key}")
+
+        return 0
+    except Exception as e:
+        print(f"❌ Gagal memproses tiket {issue_key}: {str(e)}")
+        return 1
+
+def cmd_jira(args):
+    action = args.jira_action
+    if action == "inspect":
+        return cmd_jira_inspect(args)
+    elif action == "process":
+        return cmd_jira_process(args)
+    else:
+        print(f"Aksi jira '{action}' tidak dikenal.")
+        return 1
+
 def cmd_list(args):
     project_root = Path(args.project_root).resolve()
     artifacts_dir = project_root / "artifacts"
@@ -230,6 +396,18 @@ def main():
     parser_approve = subparsers.add_parser("approve", parents=[common_parser], help="Verifikasi dan setujui kasus uji dengan kalkulasi hash kanonikal")
     parser_approve.add_argument("test_case", help="Path file kasus uji markdown yang akan di-approve")
     parser_approve.set_defaults(func=cmd_approve)
+
+    # Subcommand: jira
+    parser_jira = subparsers.add_parser("jira", parents=[common_parser], help="Operasi integrasi Jira Cloud")
+    jira_subparsers = parser_jira.add_subparsers(dest="jira_action", required=True)
+
+    parser_j_inspect = jira_subparsers.add_parser("inspect", parents=[common_parser], help="Periksa status dan deskripsi tiket Jira")
+    parser_j_inspect.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")
+
+    parser_j_process = jira_subparsers.add_parser("process", parents=[common_parser], help="Proses dan jalankan kasus uji dari tiket Jira")
+    parser_j_process.add_argument("issue_key", help="Key tiket Jira (misal: MED-101)")
+    parser_j_process.add_argument("--no-publish", action="store_true", help="Jangan otomatis upload ke Google Drive")
+    parser_jira.set_defaults(func=cmd_jira)
 
     args = parser.parse_args()
     return args.func(args)
