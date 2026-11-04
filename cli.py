@@ -176,11 +176,18 @@ def cmd_publish(args):
     return 0 if pub_result.get("published") else 1
 
 def get_jira_client(project_root: Path) -> JiraClient:
+    proj_cfg = load_project_config(project_root)
     env_vars = load_project_env(project_root)
-    base_url = env_vars.get("JIRA_BASE_URL", "https://medlinx.atlassian.net")
+
+    base_url = env_vars.get("JIRA_BASE_URL", "").strip() or proj_cfg.get("environment", {}).get("jira_base_url", "").strip()
     email = env_vars.get("JIRA_EMAIL", "").strip()
     token = env_vars.get("JIRA_API_TOKEN", "").strip()
 
+    if not base_url:
+        raise ValueError(
+            "JIRA_BASE_URL belum disetel di .env proyek atau saqa.json.\n"
+            "Silakan tambahkan JIRA_BASE_URL=https://your-domain.atlassian.net ke file .env proyek."
+        )
     if not email or not token:
         raise ValueError(
             "Kredensial Jira (JIRA_EMAIL dan JIRA_API_TOKEN) belum disetel di .env proyek.\n"
@@ -247,11 +254,12 @@ def cmd_jira_process(args):
                 return 0
 
         test_cases_dir = project_root / "test-cases"
+        refs = []
         try:
             refs = extract_test_case_references(desc_text, test_cases_dir)
         except Exception as ref_err:
-            print(f"⚠️  Pemeriksaan referensi kasus uji: {str(ref_err)}")
-            refs = []
+            print(f"❌ Kesalahan referensi kasus uji pada tiket: {str(ref_err)}")
+            return 1
 
         if not refs:
             scenario = extract_qa_scenario_block(desc_text)
@@ -259,22 +267,24 @@ def cmd_jira_process(args):
                 draft_dir = test_cases_dir / "drafts"
                 draft_dir.mkdir(parents=True, exist_ok=True)
                 draft_file = draft_dir / f"{issue_key}-scenario.md"
-                draft_file.write_text(
-                    f"# {issue_key}: Scenario from Jira\n\n"
-                    f"- **ID**: {issue_key}\n"
-                    f"- **Title**: {summary}\n"
-                    f"- **Type**: Positive\n"
-                    f"- **Execution Mode**: deterministic\n"
-                    f"- **Approval Status**: pending\n\n"
-                    f"## Raw QA Scenario\n{scenario}\n",
-                    encoding="utf-8"
-                )
+                if not draft_file.exists():
+                    draft_file.write_text(
+                        f"# {issue_key}: Scenario from Jira\n\n"
+                        f"- **ID**: {issue_key}\n"
+                        f"- **Title**: {summary}\n"
+                        f"- **Type**: Positive\n"
+                        f"- **Execution Mode**: deterministic\n"
+                        f"- **Approval Status**: pending\n\n"
+                        f"## Raw QA Scenario\n{scenario}\n",
+                        encoding="utf-8"
+                    )
                 msg = (
                     f"(-) *[SAQA Notice]* Skenario pengujian terdeteksi pada tiket {issue_key}. "
                     f"Draf kasus uji dibuat di `{draft_file.relative_to(project_root)}` dengan status *pending*. "
                     f"Mohon review dan jalankan approve sebelum pengujian dapat dieksekusi."
                 )
-                client.post_comment(issue_key, msg)
+                if not no_publish:
+                    client.post_comment(issue_key, msg)
                 print(f"ℹ️  Draf kasus uji dibuat di {draft_file}. Menunggu review & approval manusia.")
                 return 0
             else:
@@ -293,31 +303,39 @@ def cmd_jira_process(args):
             meta_path = run_dir / "metadata.json"
             docx_path = build_docx_report(meta_path, project_root=project_root)
 
+            if no_publish:
+                print("ℹ️  Publikasi Jira dilewati (--no-publish).")
+                continue
+
             drive_info = None
-            if not no_publish:
+            # Publikasikan ke Drive jika dikonfigurasi
+            drive_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "google_drive"]
+            if drive_outputs:
                 drive_info = publish_artifacts(run_id, project_root=project_root)
 
-            # Upload attachments to Jira issue
-            uploaded_attachments = []
-            if docx_path.exists():
-                try:
-                    att_docx = client.attach_file(issue_key, docx_path)
-                    uploaded_attachments.extend(att_docx)
-                except Exception as e_docx:
-                    print(f"⚠️  Gagal melampirkan DOCX ke Jira: {str(e_docx)}")
+            # Upload attachments to Jira issue jika jira_comment dikonfigurasi
+            jira_outputs = [o for o in proj_cfg.get("outputs", []) if o.get("type") == "jira_comment"]
+            if jira_outputs or not proj_cfg.get("outputs"): # Default aktif jika memanggil subperintah jira
+                uploaded_attachments = []
+                if docx_path.exists():
+                    try:
+                        att_docx = client.attach_file(issue_key, docx_path)
+                        uploaded_attachments.extend(att_docx)
+                    except Exception as e_docx:
+                        print(f"⚠️  Gagal melampirkan DOCX ke Jira: {str(e_docx)}")
 
-            video_path = run_dir / "evidence.webm"
-            if video_path.exists():
-                try:
-                    att_vid = client.attach_file(issue_key, video_path)
-                    uploaded_attachments.extend(att_vid)
-                except Exception as e_vid:
-                    print(f"⚠️  Gagal melampirkan video ke Jira: {str(e_vid)}")
+                video_path = run_dir / "evidence.webm"
+                if video_path.exists():
+                    try:
+                        att_vid = client.attach_file(issue_key, video_path)
+                        uploaded_attachments.extend(att_vid)
+                    except Exception as e_vid:
+                        print(f"⚠️  Gagal melampirkan video ke Jira: {str(e_vid)}")
 
-            # Post comment to Jira
-            comment_body = format_jira_verdict_comment(meta, uploaded_attachments, drive_info)
-            client.post_comment(issue_key, comment_body)
-            print(f"✅ Laporan dan bukti attachment berhasil dikirim ke tiket Jira {issue_key}")
+                # Post comment to Jira
+                comment_body = format_jira_verdict_comment(meta, uploaded_attachments, drive_info)
+                client.post_comment(issue_key, comment_body)
+                print(f"✅ Laporan dan bukti attachment berhasil dikirim ke tiket Jira {issue_key}")
 
         return 0
     except Exception as e:

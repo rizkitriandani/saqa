@@ -104,8 +104,8 @@ class TestJiraAdapter(unittest.TestCase):
         self.assertIn("Buka form pendaftaran", scenario)
         self.assertNotIn("Data dummy disediakan", scenario)
 
-    @patch("urllib.request.urlopen")
-    def test_jira_client_get_issue_mocked(self, mock_urlopen):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_jira_client_get_issue_mocked(self, mock_open):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({
             "key": "MED-101",
@@ -115,17 +115,17 @@ class TestJiraAdapter(unittest.TestCase):
                 "status": {"name": "In Testing"}
             }
         }).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        mock_open.return_value.__enter__.return_value = mock_resp
 
         issue = self.client.get_issue("MED-101")
         self.assertEqual(issue["key"], "MED-101")
         self.assertEqual(issue["fields"]["summary"], "Fix login validation")
 
-    @patch("urllib.request.urlopen")
-    def test_jira_client_attach_file_multipart_mocked(self, mock_urlopen):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_jira_client_attach_file_multipart_mocked(self, mock_open):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps([{"id": "10001", "filename": "report.docx"}]).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        mock_open.return_value.__enter__.return_value = mock_resp
 
         with tempfile.TemporaryDirectory() as tmpdir:
             doc_file = Path(tmpdir) / "report.docx"
@@ -136,20 +136,20 @@ class TestJiraAdapter(unittest.TestCase):
             self.assertEqual(res[0]["filename"], "report.docx")
 
             # Verifikasi Request dikirim dengan header X-Atlassian-Token
-            sent_req = mock_urlopen.call_args[0][0]
+            sent_req = mock_open.call_args[0][0]
             self.assertEqual(sent_req.get_header("X-atlassian-token"), "no-check")
             self.assertTrue(sent_req.get_header("Content-type").startswith("multipart/form-data"))
 
-    @patch("urllib.request.urlopen")
-    def test_jira_client_post_comment_mocked(self, mock_urlopen):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_jira_client_post_comment_mocked(self, mock_open):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps({"id": "20001", "body": "Report PASSED"}).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        mock_open.return_value.__enter__.return_value = mock_resp
 
         res = self.client.post_comment("MED-101", "Report PASSED")
         self.assertEqual(res["id"], "20001")
 
-        sent_req = mock_urlopen.call_args[0][0]
+        sent_req = mock_open.call_args[0][0]
         self.assertEqual(sent_req.get_header("Content-type"), "application/json")
         sent_body = json.loads(sent_req.data.decode("utf-8"))
         self.assertEqual(sent_body["body"], "Report PASSED")
@@ -187,12 +187,55 @@ class TestJiraAdapter(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             proj_dir = Path(tmpdir)
-            (proj_dir / ".env").write_text("JIRA_EMAIL=tester@medlinx.id\nJIRA_API_TOKEN=fake_token\n", encoding="utf-8")
+            (proj_dir / ".env").write_text(
+                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=tester@medlinx.id\nJIRA_API_TOKEN=fake_token\n",
+                encoding="utf-8"
+            )
             from cli import cmd_jira_inspect
             import argparse
             args = argparse.Namespace(issue_key="MED-200", project_root=str(proj_dir))
             ret = cmd_jira_inspect(args)
             self.assertEqual(ret, 0)
+
+    @patch("runner.adapters.jira.JiraClient.get_issue")
+    @patch("runner.adapters.jira.JiraClient.attach_file")
+    @patch("runner.adapters.jira.JiraClient.post_comment")
+    @patch("runner.engine.run_test_case")
+    def test_cmd_jira_process_no_publish_skips_mutations(self, mock_run, mock_comment, mock_attach, mock_get_issue):
+        mock_get_issue.return_value = {
+            "key": "MED-300",
+            "fields": {
+                "summary": "Process test",
+                "status": {"name": "In Testing"},
+                "description": "Test Cases: TC-001"
+            }
+        }
+        mock_run.return_value = {
+            "run_id": "RUN_TEST_JIRA",
+            "test_case_id": "TC-001",
+            "title": "Sample",
+            "verdict": "PASSED",
+            "execution_duration_seconds": 1.0,
+            "actual_result": "Success"
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            (proj_dir / ".env").write_text(
+                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=t@medlinx.id\nJIRA_API_TOKEN=tok\n",
+                encoding="utf-8"
+            )
+            tc_dir = proj_dir / "test-cases"
+            tc_dir.mkdir(parents=True)
+            (tc_dir / "TC-001-sample.md").write_text("# TC-001", encoding="utf-8")
+
+            from cli import cmd_jira_process
+            import argparse
+            args = argparse.Namespace(issue_key="MED-300", project_root=str(proj_dir), no_publish=True)
+            ret = cmd_jira_process(args)
+            self.assertEqual(ret, 0)
+            # Memastikan tidak ada pengunggahan attachment maupun komentar ke Jira saat flag --no-publish aktif
+            mock_attach.assert_not_called()
+            mock_comment.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

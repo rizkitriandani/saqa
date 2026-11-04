@@ -8,21 +8,49 @@ import mimetypes
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Mencegah kebocoran header Authorization pada redirect lintas host/origin."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        m = req.get_method()
+        if (code in (301, 302, 303, 307, 308) and m in ("GET", "HEAD")):
+            new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new_req:
+                from urllib.parse import urlparse
+                orig_host = urlparse(req.get_full_url()).netloc
+                new_host = urlparse(newurl).netloc
+                if orig_host != new_host:
+                    new_req.headers.pop("Authorization", None)
+                    new_req.unredirected_hdrs.pop("Authorization", None)
+            return new_req
+        raise urllib.error.HTTPError(req.get_full_url(), code, f"HTTP redirect [{code}] ditolak untuk metode non-idempotent", headers, fp)
+
 class JiraClient:
     """Klien REST API Jira Cloud terisolasi menggunakan library bawaan urllib."""
 
     def __init__(self, base_url: str, email: str, api_token: str, timeout: int = 30):
         if not base_url or not email or not api_token:
             raise ValueError("JiraClient membutuhkan base_url, email, dan api_token yang tidak kosong.")
+
+        p = urllib.parse.urlparse(base_url)
+        if p.scheme != "https":
+            raise ValueError(f"Jira base_url wajib menggunakan protokol HTTPS. Ditemukan: '{base_url}'")
+        if "@" in p.netloc:
+            raise ValueError("Userinfo/kredensial dilarang dicantumkan di dalam URL base_url.")
         
-        self.base_url = base_url.rstrip("/")
+        self.base_url = f"{p.scheme}://{p.netloc}"
         self.email = email
         self.api_token = api_token
         self.timeout = timeout
         
-        # Header Basic Authentication
         auth_str = f"{self.email}:{self.api_token}"
         self.auth_header = f"Basic {base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')}"
+        self.opener = urllib.request.build_opener(SafeRedirectHandler)
+
+    def _validate_issue_key(self, issue_key: str) -> str:
+        clean = issue_key.strip().upper()
+        if not re.match(r'^[A-Z0-9]+-\d+$', clean):
+            raise ValueError(f"Format issue key '{issue_key}' tidak valid. Diharapkan format seperti 'PROJ-123'.")
+        return clean
 
     def _request(self, method: str, endpoint: str, data: Optional[bytes] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
@@ -35,32 +63,32 @@ class JiraClient:
 
         req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self.opener.open(req, timeout=self.timeout) as resp:
                 resp_bytes = resp.read()
                 if not resp_bytes:
                     return {}
                 return json.loads(resp_bytes.decode("utf-8"))
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8") if e.fp else ""
-            raise RuntimeError(f"Jira API Error [{e.code}] on {method} {endpoint}: {err_body}")
+            # Masking error agar tidak mengekspos token/rahasia ke log
+            raise RuntimeError(f"Jira API Error [{e.code}] on {method} {endpoint}")
         except urllib.error.URLError as e:
             raise RuntimeError(f"Jira Connection Error on {method} {endpoint}: {str(e)}")
 
     def get_issue(self, issue_key: str) -> Dict[str, Any]:
         """Mengambil data tiket Jira (summary, description, status, project)."""
-        clean_key = issue_key.strip().upper()
+        clean_key = self._validate_issue_key(issue_key)
         return self._request("GET", f"/rest/api/2/issue/{clean_key}?fields=summary,description,status,project")
 
     def post_comment(self, issue_key: str, comment_text: str) -> Dict[str, Any]:
         """Menambahkan komentar ke tiket Jira."""
-        clean_key = issue_key.strip().upper()
+        clean_key = self._validate_issue_key(issue_key)
         payload = json.dumps({"body": comment_text}).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         return self._request("POST", f"/rest/api/2/issue/{clean_key}/comment", data=payload, headers=headers)
 
     def attach_file(self, issue_key: str, file_path: Path) -> List[Dict[str, Any]]:
         """Mengunggah file lampiran (attachment) ke tiket Jira dengan multipart/form-data."""
-        clean_key = issue_key.strip().upper()
+        clean_key = self._validate_issue_key(issue_key)
         if not file_path.exists():
             raise FileNotFoundError(f"File attachment tidak ditemukan: {file_path}")
 
