@@ -252,12 +252,21 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
     return "\n".join(lines)
 
 
+def _atomic_write_json(file_path: Path, data: dict):
+    """Menulis berkas JSON secara atomik menggunakan file sementara untuk mencegah korupsi metadata jika proses terputus."""
+    tmp_path = file_path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    tmp_path.replace(file_path)
+
+
 def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, project_root: Path, drive_info: dict = None, force: bool = False) -> Dict[str, Any]:
     """
     Mempublikasikan artefak pengujian (DOCX, video) dan komentar ke tiket Jira secara idempoten.
     - Menolak perpindahan target tenant atau tiket yang berbeda dari publikasi sebelumnya.
-    - Menyimpan ID attachment dan komentar segera ke metadata.json setelah setiap aksi.
-    - Retry tidak menduplikasi file yang sudah berhasil diunggah sebelumnya.
+    - Menggunakan penanda in_flight_operation dan penulisan atomik untuk mendeteksi interupsi proses.
+    - Jika status operasi remote tidak dapat dipastikan (timeout, disconnect, respons tanpa ID),
+      status disetel ke NEEDS_RECONCILIATION dan replay otomatis diblokir (termasuk force=True).
     """
     if not re.match(r'^[A-Za-z0-9_-]+$', run_id):
         raise ValueError(f"Format run_id '{run_id}' tidak valid (hanya karakter alfanumerik, dash, dan underscore).")
@@ -271,7 +280,6 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    # 1. Simpan binding tenant & issue_key segera sebelum request jaringan pertama
     target_tenant = client.base_url
     clean_key = client._validate_issue_key(issue_key)
 
@@ -283,7 +291,7 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
         "comment_id": None
     })
 
-    # Verifikasi destination binding agar run tidak salah publikasi ke tiket/tenant lain
+    # 1. Verifikasi destination binding agar run tidak salah publikasi ke tiket/tenant lain
     saved_tenant = jira_status.get("tenant")
     saved_key = jira_status.get("issue_key")
     if saved_tenant and saved_tenant != target_tenant:
@@ -291,18 +299,20 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     if saved_key and saved_key != clean_key:
         raise ValueError(f"Target issue key mismatch: run ini sebelumnya ditautkan ke '{saved_key}', bukan '{clean_key}'.")
 
+    # 2. Tolak replay jika ada penanda in-flight yang belum terselesaikan atau status NEEDS_RECONCILIATION
+    in_flight = jira_status.get("in_flight_operation")
+    if in_flight or jira_status.get("status") == "NEEDS_RECONCILIATION":
+        jira_status["status"] = "NEEDS_RECONCILIATION"
+        _atomic_write_json(meta_path, meta)
+        raise RuntimeError(
+            f"Publikasi ke Jira ditolak: terdeteksi operasi in-flight '{in_flight or 'unknown'}' yang belum terselesaikan "
+            "atau berstatus 'NEEDS_RECONCILIATION'. Periksa tiket Jira secara manual untuk memastikan apakah file/komentar "
+            "sudah terbuat di remote sebelum melanjutkan."
+        )
+
     jira_status["tenant"] = target_tenant
     jira_status["issue_key"] = clean_key
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-
-    # Tolak replay otomatis jika status sebelumnya adalah NEEDS_RECONCILIATION
-    if jira_status.get("status") == "NEEDS_RECONCILIATION":
-        raise RuntimeError(
-            f"Publikasi ke Jira ditolak: status saat ini adalah 'NEEDS_RECONCILIATION' akibat timeout atau status tak tentu "
-            f"pada operasi '{jira_status.get('in_flight_operation', 'unknown')}'. "
-            "Periksa tiket Jira secara manual untuk memastikan apakah file/komentar sudah terbuat sebelum mencoba ulang."
-        )
+    _atomic_write_json(meta_path, meta)
 
     if jira_status.get("published") and not force:
         return jira_status
@@ -318,89 +328,84 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     if meta.get("artifacts", {}).get("video") and not video_path.exists():
         raise FileNotFoundError(f"Berkas video bukti yang tercatat di metadata tidak ditemukan di {video_path}.")
 
-    # 2. Upload DOCX jika belum tercatat di status
+    # 3. Upload DOCX jika belum tercatat di status
     docx_name = docx_path.name
     if docx_name not in jira_status["attachments"] or force:
         jira_status["in_flight_operation"] = "upload_docx"
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        _atomic_write_json(meta_path, meta)
 
         try:
             att_docx = client.attach_file(issue_key, docx_path)
             if not att_docx or not att_docx[0].get("id"):
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                _atomic_write_json(meta_path, meta)
                 raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
             jira_status["attachments"][docx_name] = att_docx[0].get("id")
             jira_status["in_flight_operation"] = None
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
-        except JiraTimeoutError:
-            jira_status["status"] = "NEEDS_RECONCILIATION"
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            _atomic_write_json(meta_path, meta)
+        except JiraAPIError as e:
+            # Definite client API rejection (misal: 413, 400) -> entitas pasti tidak terbuat di remote
+            jira_status["in_flight_operation"] = None
+            _atomic_write_json(meta_path, meta)
             raise
         except Exception:
-            jira_status["in_flight_operation"] = None
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            # Indeterminate failure (Timeout, Disconnect, dsb)
+            jira_status["status"] = "NEEDS_RECONCILIATION"
+            _atomic_write_json(meta_path, meta)
             raise
 
-    # 3. Upload Video jika ada dan belum tercatat di status
+    # 4. Upload Video jika ada dan belum tercatat di status
     if video_path.exists():
         video_name = video_path.name
         if video_name not in jira_status["attachments"] or force:
             jira_status["in_flight_operation"] = "upload_video"
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            _atomic_write_json(meta_path, meta)
 
             try:
                 att_vid = client.attach_file(issue_key, video_path)
                 if not att_vid or not att_vid[0].get("id"):
+                    jira_status["status"] = "NEEDS_RECONCILIATION"
+                    _atomic_write_json(meta_path, meta)
                     raise RuntimeError(f"Gagal mengunggah attachment {video_name}: respons Jira tidak memuat ID file.")
                 jira_status["attachments"][video_name] = att_vid[0].get("id")
                 jira_status["in_flight_operation"] = None
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
-            except JiraTimeoutError:
-                jira_status["status"] = "NEEDS_RECONCILIATION"
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
+                _atomic_write_json(meta_path, meta)
+            except JiraAPIError as e:
+                jira_status["in_flight_operation"] = None
+                _atomic_write_json(meta_path, meta)
                 raise
             except Exception:
-                jira_status["in_flight_operation"] = None
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                _atomic_write_json(meta_path, meta)
                 raise
 
-    # 4. Post Komentar Ringkasan jika belum pernah diposting
+    # 5. Post Komentar Ringkasan jika belum pernah diposting
     if not jira_status.get("comment_id") or force:
         jira_status["in_flight_operation"] = "post_comment"
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        _atomic_write_json(meta_path, meta)
 
         try:
             attachment_summary = [{"filename": k} for k in jira_status["attachments"].keys()]
             comment_body = format_jira_verdict_comment(meta, attachment_summary, drive_info)
             res_cmt = client.post_comment(issue_key, comment_body)
             if not res_cmt or not res_cmt.get("id"):
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                _atomic_write_json(meta_path, meta)
                 raise RuntimeError("Gagal memposting komentar ke Jira: respons Jira tidak memuat ID komentar.")
             jira_status["comment_id"] = res_cmt.get("id")
             jira_status["in_flight_operation"] = None
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
-        except JiraTimeoutError:
-            jira_status["status"] = "NEEDS_RECONCILIATION"
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            _atomic_write_json(meta_path, meta)
+        except JiraAPIError as e:
+            jira_status["in_flight_operation"] = None
+            _atomic_write_json(meta_path, meta)
             raise
         except Exception:
-            jira_status["in_flight_operation"] = None
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            jira_status["status"] = "NEEDS_RECONCILIATION"
+            _atomic_write_json(meta_path, meta)
             raise
 
     jira_status["published"] = True
     jira_status["status"] = "PUBLISHED"
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    _atomic_write_json(meta_path, meta)
 
     return jira_status

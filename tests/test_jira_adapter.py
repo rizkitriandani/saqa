@@ -301,13 +301,13 @@ class TestJiraAdapter(unittest.TestCase):
             (run_dir / "report.docx").write_bytes(b"PK0304")
             (run_dir / "evidence.webm").write_bytes(b"WEBM01")
 
-            from runner.adapters.jira import publish_jira_artifacts
+            from runner.adapters.jira import publish_jira_artifacts, JiraAPIError
 
             # Panggilan pertama: docx sukses, tapi video raise exception definite API error 413 (Payload Too Large)
-            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], RuntimeError("Jira API Error [413] on POST /rest/api/2/issue/MED-600/attachments")]
-            with self.assertRaises(RuntimeError) as ctx:
+            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], JiraAPIError(413, "POST /rest/api/2/issue/MED-600/attachments")]
+            with self.assertRaises(JiraAPIError) as ctx:
                 publish_jira_artifacts("RUN_PARTIAL", "MED-600", self.client, proj_dir)
-            self.assertIn("413", str(ctx.exception))
+            self.assertEqual(ctx.exception.status_code, 413)
 
             # Verifikasi metadata mencatat docx tapi published masih False
             with open(meta_path) as f:
@@ -329,6 +329,34 @@ class TestJiraAdapter(unittest.TestCase):
             mock_attach.assert_called_once()
             self.assertEqual(mock_attach.call_args[0][1].name, "evidence.webm")
             mock_comment.assert_called_once()
+
+    def test_publish_jira_in_flight_operation_leftover_blocks_replay(self):
+        # Skenario: Proses sebelumnya mati mendadak saat 'upload_video' sedang berlangsung
+        # Panggilan berikutnya (termasuk force=True) wajib DITOLAK demi mencegah duplikasi remote
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_CRASH"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_CRASH",
+                "test_case_id": "TC-001",
+                "verdict": "PASSED",
+                "jira_publish_status": {
+                    "tenant": self.base_url,
+                    "issue_key": "MED-999",
+                    "in_flight_operation": "upload_video",
+                    "published": False,
+                    "attachments": {"report.docx": "att_1"}
+                }
+            }), encoding="utf-8")
+            (run_dir / "report.docx").write_bytes(b"PK0304")
+            (run_dir / "evidence.webm").write_bytes(b"WEBM01")
+
+            from runner.adapters.jira import publish_jira_artifacts
+            with self.assertRaises(RuntimeError) as ctx:
+                publish_jira_artifacts("RUN_CRASH", "MED-999", self.client, proj_dir, force=True)
+            self.assertIn("in-flight 'upload_video' yang belum terselesaikan", str(ctx.exception))
 
     @patch("runner.adapters.jira.JiraClient.attach_file")
     @patch("runner.adapters.jira.JiraClient.post_comment")
