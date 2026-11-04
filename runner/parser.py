@@ -26,60 +26,41 @@ def compute_canonical_content_hash(content: str) -> str:
 def compile_expected_results(expected_results: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Menerjemahkan kriteria hasil Expected Results menjadi aturan asersi terstruktur yang dapat dievaluasi mesin.
-    Prinsip Fail-Closed: Jika ada aturan narasi yang tidak dapat dipetakan secara terukur,
-    aturan tersebut dikembalikan dalam unparseable_rules agar eksekusi dibatalkan sebelum browser berjalan.
+    Prinsip Fail-Closed:
+    - Wajib menggunakan re.fullmatch agar tidak ada trailing text atau klausa gabungan yang lolos tanpa evaluasi.
+    - Wajib menggunakan tanda kutip eksplisit ("..." atau '...') dengan isi tidak kosong.
+    - Sintaks parsial, klausa gabungan ('and ...'), atau narasi bebas dikembalikan dalam unparseable_rules
+      sehingga eksekusi dibatalkan sebelum browser berjalan.
     """
     compiled_rules: List[Dict[str, Any]] = []
     unparseable_rules: List[str] = []
 
+    # Gramar baku fullmatch: ^<pola>\s+["']<nilai>["']$
+    patterns = [
+        ("url_not_contains", re.compile(r'^url\s+(?:does\s+not\s+contain|not\s+contains?)\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
+        ("url_contains", re.compile(r'^url\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
+        ("url_equals", re.compile(r'^url\s+equals?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
+        ("heading_contains", re.compile(r'^heading\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
+        ("text_contains", re.compile(r'^(?:text|page|body)\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
+        ("element_visible", re.compile(r'^element\s+["\']([^"\']+)["\']\s+is\s+visible$', re.IGNORECASE)),
+    ]
+
     for raw in expected_results:
-        clean = raw.strip().strip("- *")
+        clean = raw.strip().strip("- *").strip()
         if not clean:
             continue
 
         matched = False
-
-        # 1. URL not contains
-        m = re.search(r'url\s+(?:does\s+not\s+contain|not\s+contains?)\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "url_not_contains", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
-
-        # 2. URL contains
-        m = re.search(r'url\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "url_contains", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
-
-        # 3. URL equals
-        m = re.search(r'url\s+equals?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "url_equals", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
-
-        # 4. Heading contains
-        m = re.search(r'heading\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "heading_contains", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
-
-        # 5. Text / Page contains
-        m = re.search(r'(?:text|page|body)\s+contains?\s+["\']?([^"\']+)["\']?', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "text_contains", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
-
-        # 6. Element is visible
-        m = re.search(r'element\s+["\']?([^"\']+)["\']?\s+is\s+visible', clean, re.IGNORECASE)
-        if m:
-            compiled_rules.append({"type": "element_visible", "val": m.group(1).strip(), "raw": clean})
-            matched = True
-            continue
+        for rule_type, pattern in patterns:
+            m = pattern.fullmatch(clean)
+            if m:
+                val = m.group(1).strip()
+                if not val:
+                    # Operand kosong di dalam kutip ditolak (fail-closed)
+                    break
+                compiled_rules.append({"type": rule_type, "val": val, "raw": clean})
+                matched = True
+                break
 
         if not matched:
             unparseable_rules.append(clean)

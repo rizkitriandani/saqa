@@ -43,15 +43,23 @@ class TestCoreEngineHardening(unittest.TestCase):
             self.assertTrue(any("ai" in e.lower() for e in errors))
 
     def test_unsupported_expected_result_rejected_fail_closed(self):
-        # Narasi bebas yang tidak dapat dikompilasi menjadi asersi mesin wajib ditolak
+        # Narasi bebas atau klausa gabungan yang tidak memenuhi grammar fullmatch wajib ditolak
         raw_rules = [
-            "url does not contain \"/login\"",
-            "Sistem harus berjalan dengan cepat dan tanpa hambatan sama sekali" # Tidak terukur / tidak didukung
+            'url does not contain "/login"',
+            'url contains "/login" and balance equals "0"', # Adversarial: trailing clause
+            'url contains /unquoted',                        # Adversarial: unquoted
+            'url contains ""',                               # Adversarial: empty operand
+            'heading contains "Unclosed quote',              # Adversarial: unclosed quote
+            "Sistem harus berjalan dengan cepat dan lancar"   # Narasi bebas
         ]
         compiled, unparseable = compile_expected_results(raw_rules)
         self.assertEqual(len(compiled), 1)
-        self.assertEqual(len(unparseable), 1)
-        self.assertIn("Sistem harus berjalan", unparseable[0])
+        self.assertEqual(len(unparseable), 5)
+        self.assertIn('url contains "/login" and balance equals "0"', unparseable)
+        self.assertIn('url contains /unquoted', unparseable)
+        self.assertIn('url contains ""', unparseable)
+        self.assertIn('heading contains "Unclosed quote', unparseable)
+        self.assertIn('Sistem harus berjalan dengan cepat dan lancar', unparseable)
 
     def test_supported_expected_results_compiled_cleanly(self):
         raw_rules = [
@@ -128,6 +136,189 @@ class TestCoreEngineHardening(unittest.TestCase):
         self.assertIn("QA_PASSWORD", ALLOWED_ENV_VARS)
         self.assertNotIn("GOOGLE_APPLICATION_CREDENTIALS", ALLOWED_ENV_VARS)
         self.assertNotIn("GOOGLE_DRIVE_FOLDER_ID", ALLOWED_ENV_VARS)
+
+    def test_offline_html_run_passed(self):
+        # Menguji eksekusi deterministik dan asersi generik secara offline via fixture HTML
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            html_file = tmppath / "dashboard.html"
+            html_file.write_text(
+                "<!DOCTYPE html><html><head><title>Portal QA</title></head>"
+                "<body><h1>Dashboard Utama</h1><p>Status: Aktif</p>"
+                "<button id='action-btn'>Konfirmasi</button></body></html>",
+                encoding="utf-8"
+            )
+            file_url = f"file://{html_file.resolve()}"
+
+            tc_content = (
+                "# TC-LOCAL-01: Offline Test\n\n"
+                "- **ID**: TC-LOCAL-01\n"
+                "- **Title**: Offline Test Case\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                f"- **Target URL**: {file_url}\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                f"| 1 | navigate | {file_url} | - | Halaman termuat |\n"
+                "| 2 | click | Konfirmasi | - | Tombol diklik |\n\n"
+                "## Expected Results\n"
+                "- heading contains \"Dashboard Utama\"\n"
+                "- text contains \"Status: Aktif\"\n"
+                "- element \"#action-btn\" is visible\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_offline.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            res = run_test_case(str(tc_path))
+            self.assertEqual(res["verdict"], "PASSED")
+            self.assertIn("Semua 3 kriteria asersi berhasil divalidasi", res["actual_result"])
+
+    def test_offline_html_run_failed_when_expectation_unmet(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            html_file = tmppath / "page.html"
+            html_file.write_text("<html><body><h1>Judul Lain</h1></body></html>", encoding="utf-8")
+            file_url = f"file://{html_file.resolve()}"
+
+            tc_content = (
+                "# TC-LOCAL-02: Expectation Unmet\n\n"
+                "- **ID**: TC-LOCAL-02\n"
+                "- **Title**: Expectation Unmet Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                f"- **Target URL**: {file_url}\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                f"| 1 | navigate | {file_url} | - | Halaman termuat |\n\n"
+                "## Expected Results\n"
+                "- heading contains \"Dashboard Utama\"\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_unmet.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            res = run_test_case(str(tc_path))
+            self.assertEqual(res["verdict"], "FAILED")
+            self.assertIn("Heading tidak memuat 'Dashboard Utama'", res["actual_result"])
+
+    def test_offline_html_ambiguous_target_rejected(self):
+        # Dua tombol dengan teks sama persis tanpa id unik wajib melempar error ambiguitas
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            html_file = tmppath / "ambiguous.html"
+            html_file.write_text(
+                "<html><body><button>Submit</button><button>Submit</button></body></html>",
+                encoding="utf-8"
+            )
+            file_url = f"file://{html_file.resolve()}"
+
+            tc_content = (
+                "# TC-LOCAL-03: Ambiguous Target\n\n"
+                "- **ID**: TC-LOCAL-03\n"
+                "- **Title**: Ambiguous Target Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                f"- **Target URL**: {file_url}\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                f"| 1 | navigate | {file_url} | - | Halaman termuat |\n"
+                "| 2 | click | Submit | - | Tombol diklik |\n\n"
+                "## Expected Results\n"
+                "- text contains \"Submit\"\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_ambig.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            res = run_test_case(str(tc_path))
+            self.assertEqual(res["verdict"], "ERROR")
+            self.assertIn("Penargetan ambigu", res["error_message"])
+
+    def test_inline_assert_step_failure_is_failed_not_error(self):
+        # Kegagalan asersi langkah (bukan error sistem) wajib menghasilkan verdict FAILED
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            html_file = tmppath / "simple.html"
+            html_file.write_text("<html><body><p>Hello World</p></body></html>", encoding="utf-8")
+            file_url = f"file://{html_file.resolve()}"
+
+            tc_content = (
+                "# TC-LOCAL-04: Step Assert Fail\n\n"
+                "- **ID**: TC-LOCAL-04\n"
+                "- **Title**: Step Assert Fail Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                f"- **Target URL**: {file_url}\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                f"| 1 | navigate | {file_url} | - | Termuat |\n"
+                "| 2 | assert | Nonexistent Text | - | Asersi langkah gagal |\n\n"
+                "## Expected Results\n"
+                "- text contains \"Hello World\"\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_assert_fail.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            res = run_test_case(str(tc_path))
+            self.assertEqual(res["verdict"], "FAILED")
+            self.assertIn("Kegagalan asersi langkah", res["actual_result"])
+
+    def test_forbidden_origin_navigation_blocked(self):
+        # Navigasi ke origin di luar allowlist wajib melempar PermissionError
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tc_content = (
+                "# TC-LOCAL-05: Forbidden Origin\n\n"
+                "- **ID**: TC-LOCAL-05\n"
+                "- **Title**: Forbidden Origin Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                "- **Target URL**: https://unauthorized-evil-site.com\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| 1 | navigate | https://unauthorized-evil-site.com | - | Harusnya diblokir |\n\n"
+                "## Expected Results\n"
+                "- text contains \"anything\"\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_evil.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            res = run_test_case(str(tc_path))
+            self.assertEqual(res["verdict"], "ERROR")
+            self.assertIn("diblokir oleh kebijakan keamanan", res["error_message"])
 
 if __name__ == "__main__":
     unittest.main()

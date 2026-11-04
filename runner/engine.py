@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
+from urllib.parse import urlparse
 from runner.parser import (
     parse_markdown_test_case,
     validate_test_case_contract,
@@ -15,6 +16,34 @@ from runner.parser import (
     compile_expected_results,
     ALLOWED_ENV_VARS
 )
+
+def get_allowed_origins(dev_base_url: str) -> set:
+    """Mengembalikan daftar origin tepercaya yang diizinkan untuk navigasi browser."""
+    origins = {"http://localhost", "http://127.0.0.1", "file://"}
+    if dev_base_url:
+        p = urlparse(dev_base_url)
+        if p.scheme and p.netloc:
+            origins.add(f"{p.scheme}://{p.netloc}")
+    extra = os.environ.get("ALLOWED_ORIGINS", "")
+    if extra:
+        for o in extra.split(","):
+            if o.strip():
+                origins.add(o.strip())
+    return origins
+
+def validate_navigation_origin(url_str: str, allowed_origins: set):
+    """Memeriksa apakah URL yang dituju berada dalam allowlist origin tepercaya."""
+    if url_str.startswith("file://"):
+        return
+    p = urlparse(url_str)
+    if not p.scheme or not p.netloc:
+        raise ValueError(f"URL navigasi '{url_str}' tidak valid (membutuhkan scheme dan domain).")
+    origin = f"{p.scheme}://{p.netloc}"
+    if origin not in allowed_origins:
+        raise PermissionError(
+            f"Navigasi ke origin '{origin}' diblokir oleh kebijakan keamanan. "
+            f"Origin yang diizinkan: {sorted(list(allowed_origins))}"
+        )
 
 def load_env(env_path: Path) -> dict:
     env_dict = {}
@@ -34,7 +63,14 @@ def load_env(env_path: Path) -> dict:
             env_dict[k] = os.environ[k]
     return env_dict
 
-def resolve_variables(text: str, env_vars: dict) -> str:
+def resolve_variables(text: str, env_vars: dict, allow_password: bool = False) -> str:
+    """
+    Menyubstitusi variabel dari allowlist ke dalam teks.
+    Kebijakan Keamanan:
+    - Variabel di luar ALLOWED_ENV_VARS langsung ditolak.
+    - QA_PASSWORD hanya diizinkan untuk aksi input (allow_password=True).
+    - Variabel yang belum terdefinisi / kosong ditolak (tidak boleh disubstitusi jadi string kosong).
+    """
     if not text:
         return ""
     matches = re.findall(r'\$\{([^}]+)\}', text)
@@ -44,53 +80,71 @@ def resolve_variables(text: str, env_vars: dict) -> str:
                 f"Variabel '${{{var_name}}}' tidak diizinkan. "
                 f"Hanya variabel terdaftar yang boleh digunakan: {sorted(list(ALLOWED_ENV_VARS))}"
             )
+        if var_name == "QA_PASSWORD" and not allow_password:
+            raise PermissionError(
+                "Variabel '${QA_PASSWORD}' dilarang digunakan di luar kolom input formulir/fill "
+                "(mencegah kebocoran kata sandi pada URL, parameter GET, atau teks terbuka)."
+            )
         val = env_vars.get(var_name, os.environ.get(var_name, ""))
+        if not val:
+            raise ValueError(
+                f"Variabel '${{{var_name}}}' belum disetel di environment atau .env. Nilai tidak boleh kosong."
+            )
         text = text.replace(f"${{{var_name}}}", str(val))
     return text
 
 def find_unique_element(page, candidates: list, target_desc: str):
-    """Mencari elemen interaktif dengan verifikasi keunikan (menolak penargetan ambigu)."""
+    """
+    Mencari elemen interaktif dengan verifikasi keunikan (menolak penargetan ambigu).
+    Hanya mengembalikan elemen jika target secara spesifik menemukan tepat 1 elemen aktif.
+    """
     matching_locators = []
     for loc in candidates:
-        cnt = loc.count()
+        try:
+            cnt = loc.count()
+        except Exception:
+            continue
+
         if cnt == 1:
             matching_locators.append(loc)
         elif cnt > 1:
-            # Saring yang visible
             vis = [loc.nth(i) for i in range(cnt) if loc.nth(i).is_visible()]
             if len(vis) == 1:
                 matching_locators.append(vis[0])
             elif len(vis) > 1:
                 raise ValueError(
                     f"Penargetan ambigu: ditemukan {len(vis)} elemen aktif untuk target '{target_desc}'. "
-                    "Perjelas selector atau label elemen."
+                    "Gunakan selector ID unik atau label spesifik."
                 )
 
     if not matching_locators:
         return None
     return matching_locators[0]
 
-def execute_step_action(page, step: dict, env_vars: dict):
+def execute_step_action(page, step: dict, env_vars: dict, allowed_origins: set):
     action = step["action"].lower()
     raw_target = step.get("target", "")
     raw_val = step.get("value", "")
 
-    target = resolve_variables(raw_target, env_vars)
-    val = resolve_variables(raw_val, env_vars)
+    # Keamanan: QA_PASSWORD hanya diizinkan untuk value pada aksi fill
+    target = resolve_variables(raw_target, env_vars, allow_password=False)
+    val = resolve_variables(raw_val, env_vars, allow_password=(action == "fill"))
 
     if action == "navigate":
+        validate_navigation_origin(target, allowed_origins)
         page.goto(target, timeout=30000, wait_until="networkidle")
     elif action == "fill":
         candidates = [
+            page.get_by_label(target, exact=True),
             page.get_by_label(target, exact=False),
+            page.get_by_placeholder(target, exact=True),
             page.get_by_placeholder(target, exact=False),
-            page.locator(f"input[name='{target}'], textarea[name='{target}']"),
             page.locator(f"#{target}"),
+            page.locator(f"input[name='{target}'], textarea[name='{target}']"),
         ]
-        if "username" in target.lower():
-            candidates.append(page.locator("input[id*='user'], input[name*='user']"))
-        elif "password" in target.lower():
-            candidates.append(page.locator("input[type='password'], input[id*='pass']"))
+        # Jika target diawali selector CSS/XPath
+        if any(target.startswith(prefix) for prefix in ["#", ".", "[", "//"]):
+            candidates.insert(0, page.locator(target))
 
         el = find_unique_element(page, candidates, target)
         if not el:
@@ -101,15 +155,15 @@ def execute_step_action(page, step: dict, env_vars: dict):
         candidates = [
             page.get_by_role("button", name=target, exact=True),
             page.get_by_role("button", name=target, exact=False),
-            page.locator(f"button:has-text('{target}'), a:has-text('{target}')"),
             page.locator(f"#{target}"),
+            page.locator(f"button:has-text('{target}'), a:has-text('{target}')"),
         ]
-        if any(term in target.lower() for term in ["sign in", "login", "masuk", "submit"]):
-            candidates.append(page.locator("button[type='submit']"))
+        if any(target.startswith(prefix) for prefix in ["#", ".", "[", "//"]):
+            candidates.insert(0, page.locator(target))
 
         el = find_unique_element(page, candidates, target)
         if not el:
-            raise ValueError(f"Elemen tombol untuk target '{target}' tidak ditemukan untuk diklik.")
+            raise ValueError(f"Elemen tombol/interaktif untuk target '{target}' tidak ditemukan untuk diklik.")
         el.click()
         page.wait_for_load_state("networkidle", timeout=30000)
 
@@ -120,7 +174,7 @@ def execute_step_action(page, step: dict, env_vars: dict):
         time.sleep(secs)
     elif action == "assert":
         if target not in page.inner_text("body"):
-            raise AssertionError(f"Teks asersi '{target}' tidak ditemukan pada halaman.")
+            raise AssertionError(f"Teks asersi langkah '{target}' tidak ditemukan pada halaman.")
     else:
         raise ValueError(f"Aksi '{action}' tidak didukung oleh runner.")
 
@@ -207,6 +261,9 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
     # Compile expected results
     compiled_assertions, _ = compile_expected_results(parsed_tc.get("expected_results", []))
 
+    dev_base_url = env_vars.get("DEV_BASE_URL", os.environ.get("DEV_BASE_URL", ""))
+    allowed_origins = get_allowed_origins(dev_base_url)
+
     start_time = time.time()
 
     with sync_playwright() as p:
@@ -226,7 +283,7 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                 target = s["target"]
                 outcome = s.get("expected_step_outcome", "")
 
-                execute_step_action(page, s, env_vars)
+                execute_step_action(page, s, env_vars, allowed_origins)
                 time.sleep(0.5)
 
                 sc_name = f"step_{step_num}_{action}.png"
@@ -247,9 +304,8 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
             time.sleep(2)
             current_url = page.url
             body_text = page.inner_text("body")
-            page_title = page.title()
             headings_text = " ".join([
-                h.inner_text() for h in page.query_selector_all("h1, h2, h3, h4, [role='heading'], .page-title")
+                h.inner_text().strip() for h in page.query_selector_all("h1, h2, h3, h4, h5, h6, [role='heading'], .page-title")
             ])
 
             sc_final = screenshots_dir / "final_state.png"
@@ -281,14 +337,15 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                         if current_url != val:
                             failed_assertions.append(f"URL '{current_url}' != '{val}' (aturan: '{raw}')")
                     elif rtype == "heading_contains":
-                        if val.lower() not in headings_text.lower() and val.lower() not in page_title.lower():
-                            failed_assertions.append(f"Judul/heading tidak memuat '{val}' (aturan: '{raw}')")
+                        if val.lower() not in headings_text.lower():
+                            failed_assertions.append(f"Heading tidak memuat '{val}' (aturan: '{raw}')")
                     elif rtype == "text_contains":
                         if val not in body_text:
                             failed_assertions.append(f"Teks '{val}' tidak ditemukan di halaman (aturan: '{raw}')")
                     elif rtype == "element_visible":
                         loc = page.locator(val)
-                        if loc.count() == 0 or not loc.first.is_visible():
+                        cnt = loc.count()
+                        if cnt == 0 or not any(loc.nth(i).is_visible() for i in range(cnt)):
                             failed_assertions.append(f"Elemen '{val}' tidak tampil (aturan: '{raw}')")
 
                 if not failed_assertions:
@@ -304,6 +361,15 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
                         f"{'; '.join(failed_assertions)}. URL akhir: {current_url}."
                     )
 
+        except AssertionError as ae:
+            metadata["verdict"] = "FAILED"
+            metadata["actual_result"] = f"Kegagalan asersi langkah: {str(ae)}"
+            sc_err = screenshots_dir / "assertion_failure.png"
+            try:
+                page.screenshot(path=str(sc_err))
+                metadata["artifacts"]["screenshots"].append(str(sc_err))
+            except Exception:
+                pass
         except Exception as e:
             metadata["verdict"] = "ERROR"
             metadata["error_message"] = str(e)
