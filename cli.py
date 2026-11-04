@@ -496,6 +496,15 @@ def cmd_setup_harness(args):
 
     return 0 if success else 1
 
+def cmd_webhook(args):
+    from runner.adapters.webhook_server import start_webhook_server
+    project_root = Path(args.project_root).resolve()
+    host = args.host
+    port = args.port
+    runner = args.runner
+    start_webhook_server(host=host, port=port, project_root=project_root, runner_override=runner)
+    return 0
+
 def main():
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--project-root", default=argparse.SUPPRESS, help="Root direktori proyek aktif")
@@ -557,6 +566,13 @@ def main():
     parser_setup.add_argument("--target", choices=["all", "pi", "hermes"], default="all", help="Target harness (default: all)")
     parser_setup.add_argument("--playwright", action="store_true", help="Sekaligus install browser Chromium Playwright")
     parser_setup.set_defaults(func=cmd_setup_harness)
+
+    # Subcommand: webhook
+    parser_wh = subparsers.add_parser("webhook", parents=[common_parser], help="Jalankan Webhook Receiver Server (VPS listener)")
+    parser_wh.add_argument("--host", default="0.0.0.0", help="Host bind address (default: 0.0.0.0)")
+    parser_wh.add_argument("--port", type=int, default=8080, help="Port server (default: 8080)")
+    parser_wh.add_argument("--runner", choices=["local", "github", "gitlab"], default=None, help="Pilihan runner: local (default), github, atau gitlab")
+    parser_wh.set_defaults(func=cmd_webhook)
 
     args = parser.parse_args()
     return args.func(args)

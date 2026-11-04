@@ -146,5 +146,6 @@ Contoh eksekusi:
 - **Setujui Uji**: `python3 <SAQA_ROOT>/cli.py approve <path_to_test_case.md> --project-root .`
 - **Jalankan Uji**: `python3 <SAQA_ROOT>/cli.py run <path_to_test_case.md> --no-publish --project-root .`
 - **Diagnosa Run**: `python3 <SAQA_ROOT>/cli.py diagnose <run_id> [--attach "<analysis>"] --project-root .`
+- **Jalankan Webhook Server (VPS Listener)**: `python3 <SAQA_ROOT>/cli.py webhook --port 8080 --runner local --project-root .`
 - **Publikasikan**: `python3 <SAQA_ROOT>/cli.py publish <run_id> --project-root .`
 - **Lihat Riwayat**: `python3 <SAQA_ROOT>/cli.py list --project-root .`

@@ -5,9 +5,10 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 
 SUPPORTED_CONFIG_VERSION = 1
-SUPPORTED_INPUT_TRIGGERS = {"cli"}
+SUPPORTED_INPUT_TRIGGERS = {"cli", "jira_webhook"}
 SUPPORTED_INPUT_SOURCES = {"repo", "cli", "jira_issue"}
 SUPPORTED_OUTPUT_TYPES = {"local", "google_drive", "jira_comment"}
+SUPPORTED_RUNNER_TARGETS = {"local", "github", "gitlab"}
 
 def load_project_env(project_root: Path) -> Dict[str, str]:
     """
@@ -72,6 +73,13 @@ def validate_project_config(cfg: Dict[str, Any]) -> List[str]:
         statuses = input_cfg.get("trigger_statuses", [])
         if statuses and not isinstance(statuses, list):
             errors.append("Field 'input.trigger_statuses' wajib berupa list nama status string.")
+
+    runner_target = cfg.get("runner_target", "local")
+    if runner_target not in SUPPORTED_RUNNER_TARGETS:
+        errors.append(
+            f"Target runner '{runner_target}' tidak didukung. "
+            f"Pilihan valid: {sorted(list(SUPPORTED_RUNNER_TARGETS))}."
+        )
 
     outputs = cfg.get("outputs", [])
     if not outputs:

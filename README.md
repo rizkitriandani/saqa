@@ -34,6 +34,8 @@ SAQA separates testing responsibilities into three decoupled aspects:
 | **AI Failure Diagnostics** | ✅ Active | Post-execution visual screenshot analysis and root-cause explanation (`/saqa diagnose`). |
 | **Multi-Project Isolation** | ✅ Active | Isolated environments, allowlists, and outputs configured per project via `saqa.json`. |
 | **Jira Cloud Integration** | ✅ Active | Inspect tickets, run referenced tests, and attach DOCX/video + verdict comments (`cli.py jira`). |
+| **Direct VPS Webhook Server** | ✅ Active | Lightweight HTTP receiver (`saqa webhook`) running tests directly on your VPS without GitHub. |
+| **Multi-Runner Target Options**| ✅ Active | Configurable execution targets: `local` (VPS engine), `github` (Actions), or `gitlab` (CI). |
 | **Automated CI/CD Trigger** | ✅ Active | GitHub Actions runner triggered via Jira Automation (`.github/workflows/saqa-jira.yml`). |
 | **Pi Coding Agent Skill** | ✅ Active | Portable `SKILL.md` and prompt template enabling `/saqa` slash commands. |
 | **Hermes Agent Plugin & Skill** | ✅ Active | Native toolset (`saqa_run`, `saqa_approve`, etc.) and `/saqa` slash command in Hermes. |
@@ -233,8 +235,31 @@ python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> --project-root .
   ```
   *(Runs referenced tests, uploads `report.docx` and `evidence.webm` to the ticket's attachments, and posts a verdict summary comment).*
 
-### Automated CI/CD Execution (Jira Webhook ➔ GitHub Actions)
-See **[`docs/jira-automation-setup.md`](docs/jira-automation-setup.md)** for a step-by-step guide on setting up a Jira Cloud Automation Rule that triggers `.github/workflows/saqa-jira.yml` when cards move to `In Testing`.
+### Automated Execution Options (Jira Webhook)
+
+You have three runner options when Jira moves a card to `In Testing`:
+
+#### Option 1: Direct on your VPS / Hermes Server (Recommended - No GitHub Actions)
+Run SAQA's built-in lightweight webhook listener directly on your VPS:
+```bash
+# Start webhook listener on port 8080 (runner: local by default)
+saqa webhook --port 8080 --runner local
+```
+Then configure Jira Automation to send a POST request directly to your VPS:
+- **URL**: `http://<YOUR_VPS_IP_OR_DOMAIN>:8080/jira-webhook`
+- **Method**: `POST`
+- **Headers**: `X-Webhook-Secret: <your_secret>` (optional token defined in `.env`)
+- **Body**: Custom JSON:
+  ```json
+  { "issue_key": "{{issue.key}}", "status": "{{issue.status.name}}" }
+  ```
+The VPS listener immediately returns `202 Accepted` and executes Playwright locally on the VPS, uploading reports and videos directly to Jira.
+
+#### Option 2: Serverless via GitHub Actions
+See **[`docs/jira-automation-setup.md`](docs/jira-automation-setup.md)** for configuring Jira Automation to trigger `.github/workflows/saqa-jira.yml` via `repository_dispatch`.
+
+#### Option 3: GitLab CI Pipeline Triggers
+Set `"runner_target": "gitlab"` in `saqa.json` or run `saqa webhook --runner gitlab` to dispatch pipeline triggers to GitLab CI.
 
 ---
 
@@ -242,26 +267,32 @@ See **[`docs/jira-automation-setup.md`](docs/jira-automation-setup.md)** for a s
 
 ```bash
 # Project configuration
-python3 "$SAQA_ROOT/cli.py" config [--project-root <path>] [--project-id <id>] [--base-url <url>] [--gdrive]
+saqa config [--project-root <path>] [--project-id <id>] [--base-url <url>] [--gdrive]
+
+# Start VPS Webhook Receiver Server (direct Jira trigger)
+saqa webhook [--host 0.0.0.0] [--port 8080] [--runner {local,github,gitlab}] [--project-root <path>]
 
 # Approve test case (calculates SHA-256 hash)
-python3 "$SAQA_ROOT/cli.py" approve <path> [--project-root <path>]
+saqa approve <path> [--project-root <path>]
 
 # Execute test case
-python3 "$SAQA_ROOT/cli.py" run <path> [--no-publish] [--project-root <path>]
+saqa run <path> [--no-publish] [--project-root <path>]
 
 # Diagnose failed run with AI
-python3 "$SAQA_ROOT/cli.py" diagnose <RUN_ID> [--attach "<analysis>"] [--project-root <path>]
+saqa diagnose <RUN_ID> [--attach "<analysis>"] [--project-root <path>]
 
 # Publish artifacts to Google Drive or Jira
-python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> [--jira-issue <KEY>] [--force] [--project-root <path>]
+saqa publish <RUN_ID> [--jira-issue <KEY>] [--force] [--project-root <path>]
 
 # Jira ticket operations
-python3 "$SAQA_ROOT/cli.py" jira inspect <ISSUE_KEY> [--project-root <path>]
-python3 "$SAQA_ROOT/cli.py" jira process <ISSUE_KEY> [--no-publish] [--project-root <path>]
+saqa jira inspect <ISSUE_KEY> [--project-root <path>]
+saqa jira process <ISSUE_KEY> [--no-publish] [--project-root <path>]
+
+# Setup agent harnesses (Pi & Hermes)
+saqa setup-harness [--target {all,pi,hermes}] [--playwright]
 
 # View run history
-python3 "$SAQA_ROOT/cli.py" list [--project-root <path>]
+saqa list [--project-root <path>]
 ```
 
 ---
