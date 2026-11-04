@@ -320,5 +320,40 @@ class TestCoreEngineHardening(unittest.TestCase):
             self.assertEqual(res["verdict"], "ERROR")
             self.assertIn("diblokir oleh kebijakan keamanan", res["error_message"])
 
+    def test_preflight_blocks_browser_launch_on_invalid_input(self):
+        # Membuktikan secara deterministik bahwa browser TIDAK diluncurkan jika preflight gagal
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            tc_content = (
+                "# TC-LOCAL-06: Preflight Fail\n\n"
+                "- **ID**: TC-LOCAL-06\n"
+                "- **Title**: Preflight Fail Test\n"
+                "- **Type**: Positive\n"
+                "- **Execution Mode**: deterministic\n"
+                "- **Approval Status**: approved\n"
+                "- **Target URL**: http://localhost/test\n\n"
+                "## Test Steps\n"
+                "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
+                "| :--- | :--- | :--- | :--- | :--- |\n"
+                "| 1 | navigate | http://localhost/test?pass=${QA_PASSWORD} | - | Password di URL terlarang |\n\n"
+                "## Expected Results\n"
+                "- text contains \"Hello\"\n"
+            )
+            h = compute_canonical_content_hash(tc_content)
+            tc_with_hash = tc_content.replace(
+                "- **Approval Status**: approved",
+                f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
+            )
+            tc_path = tmppath / "tc_preflight.md"
+            tc_path.write_text(tc_with_hash, encoding="utf-8")
+
+            with patch("runner.engine.sync_playwright") as mock_playwright:
+                res = run_test_case(str(tc_path))
+                self.assertEqual(res["verdict"], "ERROR")
+                self.assertIn("Validasi preflight gagal (browser tidak dibuka)", res["error_message"])
+                self.assertIn("QA_PASSWORD", res["error_message"])
+                mock_playwright.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import re
 import sys
 import json
 import time
+import uuid
 import shutil
 from pathlib import Path
 from datetime import datetime
@@ -178,6 +179,51 @@ def execute_step_action(page, step: dict, env_vars: dict, allowed_origins: set):
     else:
         raise ValueError(f"Aksi '{action}' tidak didukung oleh runner.")
 
+def preflight_validate(parsed_tc: dict, env_vars: dict, allowed_origins: set) -> list:
+    """
+    Validasi preflight menyeluruh sebelum browser diluncurkan:
+    - Memastikan seluruh variabel yang digunakan terdaftar di ALLOWED_ENV_VARS dan bernilai tidak kosong.
+    - Memastikan variabel QA_PASSWORD hanya digunakan pada aksi fill.
+    - Memastikan seluruh URL target dan aksi navigasi berada pada allowlist origin tepercaya.
+    - Memastikan seluruh kriteria Expected Results terkompilasi bersih tanpa aturan yang ambigu.
+    """
+    errors = []
+
+    # 1. Target URL check
+    raw_target_url = parsed_tc.get("target_url", "")
+    if raw_target_url:
+        try:
+            resolved_url = resolve_variables(raw_target_url, env_vars, allow_password=False)
+            validate_navigation_origin(resolved_url, allowed_origins)
+        except Exception as e:
+            errors.append(f"Target URL: {str(e)}")
+
+    # 2. Steps validation
+    for s in parsed_tc.get("steps", []):
+        step_num = s.get("step_number")
+        action = s.get("action", "").lower()
+        raw_target = s.get("target", "")
+        raw_val = s.get("value", "")
+
+        try:
+            target_res = resolve_variables(raw_target, env_vars, allow_password=False)
+            if action == "navigate":
+                validate_navigation_origin(target_res, allowed_origins)
+        except Exception as e:
+            errors.append(f"Langkah {step_num} Target: {str(e)}")
+
+        try:
+            resolve_variables(raw_val, env_vars, allow_password=(action == "fill"))
+        except Exception as e:
+            errors.append(f"Langkah {step_num} Value: {str(e)}")
+
+    # 3. Expected results check
+    _, unparseable = compile_expected_results(parsed_tc.get("expected_results", []))
+    if unparseable:
+        errors.append(f"Expected Results tidak terukur: {unparseable}")
+
+    return errors
+
 def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> dict:
     repo_root = Path(__file__).resolve().parent.parent
     env_vars = load_env(repo_root / ".env")
@@ -186,7 +232,8 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
     parsed_tc = parse_markdown_test_case(tc_path)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"RUN_{timestamp}"
+    uid_suffix = uuid.uuid4().hex[:8]
+    run_id = f"RUN_{timestamp}_{uid_suffix}"
     run_dir = repo_root / "artifacts" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     video_dir = run_dir / "raw_video"
@@ -258,11 +305,20 @@ def run_test_case(test_case_file: str = "test-cases/TC-001-login-valid.md") -> d
             json.dump(metadata, f, indent=2)
         return metadata
 
-    # Compile expected results
-    compiled_assertions, _ = compile_expected_results(parsed_tc.get("expected_results", []))
-
     dev_base_url = env_vars.get("DEV_BASE_URL", os.environ.get("DEV_BASE_URL", ""))
     allowed_origins = get_allowed_origins(dev_base_url)
+
+    # 3. Preflight Check Sebelum Browser Diluncurkan
+    preflight_errors = preflight_validate(parsed_tc, env_vars, allowed_origins)
+    if preflight_errors:
+        metadata["verdict"] = "ERROR"
+        metadata["error_message"] = f"Validasi preflight gagal (browser tidak dibuka): {'; '.join(preflight_errors)}"
+        with open(run_dir / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        return metadata
+
+    # Compile expected results
+    compiled_assertions, _ = compile_expected_results(parsed_tc.get("expected_results", []))
 
     start_time = time.time()
 

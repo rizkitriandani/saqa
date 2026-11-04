@@ -36,13 +36,14 @@ def compile_expected_results(expected_results: List[str]) -> Tuple[List[Dict[str
     unparseable_rules: List[str] = []
 
     # Gramar baku fullmatch: ^<pola>\s+["']<nilai>["']$
+    # Mendukung kutip tunggal di dalam kutip ganda atau sebaliknya (misal: element "button[type='submit']" is visible)
     patterns = [
-        ("url_not_contains", re.compile(r'^url\s+(?:does\s+not\s+contain|not\s+contains?)\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
-        ("url_contains", re.compile(r'^url\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
-        ("url_equals", re.compile(r'^url\s+equals?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
-        ("heading_contains", re.compile(r'^heading\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
-        ("text_contains", re.compile(r'^(?:text|page|body)\s+contains?\s+["\']([^"\']+)["\']$', re.IGNORECASE)),
-        ("element_visible", re.compile(r'^element\s+["\']([^"\']+)["\']\s+is\s+visible$', re.IGNORECASE)),
+        ("url_not_contains", re.compile(r'^url\s+(?:does\s+not\s+contain|not\s+contains?)\s+(?:"([^"]+)"|\'([^\']+)\')$', re.IGNORECASE)),
+        ("url_contains", re.compile(r'^url\s+contains?\s+(?:"([^"]+)"|\'([^\']+)\')$', re.IGNORECASE)),
+        ("url_equals", re.compile(r'^url\s+equals?\s+(?:"([^"]+)"|\'([^\']+)\')$', re.IGNORECASE)),
+        ("heading_contains", re.compile(r'^heading\s+contains?\s+(?:"([^"]+)"|\'([^\']+)\')$', re.IGNORECASE)),
+        ("text_contains", re.compile(r'^(?:text|page|body)\s+contains?\s+(?:"([^"]+)"|\'([^\']+)\')$', re.IGNORECASE)),
+        ("element_visible", re.compile(r'^element\s+(?:"([^"]+)"|\'([^\']+)\')\s+is\s+visible$', re.IGNORECASE)),
     ]
 
     for raw in expected_results:
@@ -54,9 +55,9 @@ def compile_expected_results(expected_results: List[str]) -> Tuple[List[Dict[str
         for rule_type, pattern in patterns:
             m = pattern.fullmatch(clean)
             if m:
-                val = m.group(1).strip()
+                # Group 1 (double quote) atau Group 2 (single quote)
+                val = (m.group(1) or m.group(2) or "").strip()
                 if not val:
-                    # Operand kosong di dalam kutip ditolak (fail-closed)
                     break
                 compiled_rules.append({"type": rule_type, "val": val, "raw": clean})
                 matched = True
