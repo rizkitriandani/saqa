@@ -240,6 +240,8 @@ class TestClarificationLoop(unittest.TestCase):
 
     def test_evaluate_ticket_readiness_inline_full_markdown(self):
         # Menguji jika deskripsi tiket Jira adalah dokumen Markdown lengkap
+        # Keamanan: Meskipun teks yang ditempel memuat "approved" & hash, sistem tetap menolak auto-run (ready=False)
+        # dan mewajibkan konfirmasi operator manusia (action_required=WAIT_APPROVAL).
         tc_text = (
             "# TC-001: Staff Login\n\n"
             "- **ID**: TC-001\n"
@@ -247,6 +249,7 @@ class TestClarificationLoop(unittest.TestCase):
             "- **Type**: Positive\n"
             "- **Execution Mode**: deterministic\n"
             "- **Approval Status**: approved\n"
+            "- **Approval Hash**: dummy_hash_123\n"
             "- **Target URL**: https://example.com/login\n\n"
             "## Test Steps\n"
             "| Step | Action | Target Element / Label | Input Value | Expected Step Outcome |\n"
@@ -255,20 +258,17 @@ class TestClarificationLoop(unittest.TestCase):
             "## Expected Results\n"
             "- url contains \"/dashboard\"\n"
         )
-        h = compute_canonical_content_hash(tc_text)
-        tc_signed = tc_text.replace(
-            "- **Approval Status**: approved",
-            f"- **Approval Status**: approved\n- **Approval Hash**: {h}"
-        )
 
-        res = evaluate_ticket_readiness(tc_signed, self.proj_dir, issue_key="TRACKING-130")
-        self.assertTrue(res["ready"])
-        self.assertEqual(res["reason_code"], ReasonCode.READY)
-        self.assertEqual(res["action_required"], ActionRequired.RUN)
+        res = evaluate_ticket_readiness(tc_text, self.proj_dir, issue_key="TRACKING-130")
+        self.assertFalse(res["ready"])
+        self.assertEqual(res["reason_code"], ReasonCode.INLINE_TEST_CASE_DETECTED)
+        self.assertEqual(res["action_required"], ActionRequired.WAIT_APPROVAL)
         self.assertEqual(res["candidate_source_type"], "inline_markdown")
         self.assertIsNotNone(res["candidate_summary"])
         self.assertEqual(res["candidate_summary"]["id"], "TC-001")
-        self.assertTrue((self.tc_dir / "inlined" / "TRACKING-130-TC-001.md").exists())
+        self.assertEqual(res["candidate_summary"]["steps_count"], 1)
+        # Verifikasi evaluasi ini murni read-only (tidak menulis file ke disk)
+        self.assertFalse((self.tc_dir / "inlined" / "TRACKING-130-TC-001.md").exists())
 
     def test_format_clarification_message_includes_three_options(self):
         from runner.adapters.notifier import format_clarification_message

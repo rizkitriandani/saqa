@@ -68,12 +68,8 @@ def compile_expected_results(expected_results: List[str]) -> Tuple[List[Dict[str
 
     return compiled_rules, unparseable_rules
 
-def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
-    """Menguraikan file Markdown kasus uji sesuai kontrak standar di docs/test-case-contract.md."""
-    if not tc_path.exists():
-        raise FileNotFoundError(f"File kasus uji tidak ditemukan: {tc_path}")
-
-    content = tc_path.read_text(encoding="utf-8")
+def parse_markdown_test_case_content(content: str) -> Dict[str, Any]:
+    """Menguraikan konten teks Markdown kasus uji sesuai kontrak standar di docs/test-case-contract.md."""
     parsed: Dict[str, Any] = {
         "id": "UNKNOWN",
         "title": "Unknown Test Case",
@@ -162,6 +158,15 @@ def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
                 })
 
     return parsed
+
+def parse_markdown_test_case(tc_path: Path) -> Dict[str, Any]:
+    """Menguraikan file Markdown kasus uji dari berkas lokal."""
+    if not tc_path.exists():
+        raise FileNotFoundError(f"File kasus uji tidak ditemukan: {tc_path}")
+
+    content = tc_path.read_text(encoding="utf-8")
+    return parse_markdown_test_case_content(content)
+
 
 def validate_test_case_contract(tc: Dict[str, Any]) -> List[str]:
     """Memvalidasi integritas kasus uji terhadap kontrak baku dengan aturan fail-closed."""

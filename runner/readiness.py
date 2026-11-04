@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from runner.parser import (
     parse_markdown_test_case,
+    parse_markdown_test_case_content,
     validate_test_case_contract,
     compute_canonical_content_hash
 )
@@ -87,65 +88,40 @@ def evaluate_ticket_readiness(
         return result
 
     # 1. Jalur A: Deteksi Kasus Uji Markdown Lengkap (Inline Test Case)
+    # Keamanan: Evaluasi murni in-memory (read-only) tanpa menulis berkas ke disk.
+    # Seluruh inline test case dari deskripsi tiket diperlakukan sebagai kandidat sumber
+    # yang WAJIB diverifikasi manusia (tidak boleh auto-run meskipun teks deskripsi memuat 'approved').
     if is_full_inline_test_case(desc_text):
         result["candidate_source_type"] = "inline_markdown"
-        inlined_dir = test_cases_dir / "inlined"
-        inlined_dir.mkdir(parents=True, exist_ok=True)
-        m_id = re.search(r'\b(TC-\d+)\b', desc_text, re.IGNORECASE)
-        tc_id_str = m_id.group(1).upper() if m_id else (issue_key or "INLINE")
-        file_prefix = f"{issue_key}-{tc_id_str}" if issue_key else tc_id_str
-        inline_file = inlined_dir / f"{file_prefix}.md"
-        inline_file.write_text(desc_text, encoding="utf-8")
-
-        parsed = parse_markdown_test_case(inline_file)
+        parsed = parse_markdown_test_case_content(desc_text)
         c_errors = validate_test_case_contract(parsed)
-        if c_errors:
-            result["reason_code"] = ReasonCode.CONTRACT_VALIDATION_FAILED
-            result["action_required"] = ActionRequired.FIX_CONTRACT
-            result["details"] = f"Validasi kontrak kasus uji inline gagal: {'; '.join(c_errors)}"
-            result["candidate_summary"] = {
-                "id": parsed.get("id"),
-                "title": parsed.get("title"),
-                "steps_count": len(parsed.get("steps", [])),
-                "contract_errors": c_errors
-            }
-            return result
-
-        app_status = parsed.get("approval_status", "pending").lower()
-        app_hash = parsed.get("approval_hash")
-        canon_hash = compute_canonical_content_hash(parsed.get("raw_content", ""))
+        tc_id = parsed.get("id") or (issue_key or "INLINE")
 
         result["candidate_summary"] = {
-            "id": parsed.get("id"),
+            "id": tc_id,
             "title": parsed.get("title"),
             "target_url": parsed.get("target_url"),
             "steps_count": len(parsed.get("steps", [])),
             "expected_results": parsed.get("expected_results", []),
-            "approval_status": app_status
+            "approval_status": parsed.get("approval_status", "pending")
         }
 
-        if app_status == "approved" and app_hash and app_hash == canon_hash:
-            result["ready"] = True
-            result["reason_code"] = ReasonCode.READY
-            result["action_required"] = ActionRequired.RUN
-            result["test_case_paths"] = [str(inline_file.relative_to(project_root))]
-            result["referenced_ids"] = [parsed.get("id", tc_id_str)]
-            result["details"] = f"Kasus uji inline '{parsed.get('id')}' terverifikasi valid dan disetujui."
+        if c_errors:
+            result["reason_code"] = ReasonCode.CONTRACT_VALIDATION_FAILED
+            result["action_required"] = ActionRequired.FIX_CONTRACT
+            result["details"] = f"Validasi kontrak kasus uji inline gagal: {'; '.join(c_errors)}"
+            result["candidate_summary"]["contract_errors"] = c_errors
             return result
-        else:
-            result["reason_code"] = ReasonCode.TEST_CASE_NOT_APPROVED
-            result["action_required"] = ActionRequired.WAIT_APPROVAL
-            result["unapproved_files"] = [{
-                "file": str(inline_file.relative_to(project_root)),
-                "id": parsed.get("id", tc_id_str),
-                "status": app_status,
-                "reason": "Approval hash mismatch atau status pending"
-            }]
-            result["details"] = (
-                f"Kasus uji inline '{parsed.get('id')}' ditemukan pada deskripsi tiket namun "
-                "berstatus 'pending' (membutuhkan persetujuan manusia sebelum dijalankan)."
-            )
-            return result
+
+        result["ready"] = False
+        result["reason_code"] = ReasonCode.INLINE_TEST_CASE_DETECTED
+        result["action_required"] = ActionRequired.WAIT_APPROVAL
+        result["referenced_ids"] = [tc_id]
+        result["details"] = (
+            f"Spesifikasi kasus uji lengkap '{tc_id}' terdeteksi pada deskripsi tiket. "
+            "Perlu konfirmasi/approval manusia sebelum peramban dijalankan."
+        )
+        return result
 
     # 2. Jalur B: Cek Referensi TC-xxx di bawah Test Cases
     try:
