@@ -8,21 +8,10 @@ import mimetypes
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Mencegah kebocoran header Authorization pada redirect lintas host/origin."""
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Menolak seluruh redirect HTTP untuk mencegah kebocoran kredensial atau payload."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        m = req.get_method()
-        if (code in (301, 302, 303, 307, 308) and m in ("GET", "HEAD")):
-            new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
-            if new_req:
-                from urllib.parse import urlparse
-                orig_host = urlparse(req.get_full_url()).netloc
-                new_host = urlparse(newurl).netloc
-                if orig_host != new_host:
-                    new_req.headers.pop("Authorization", None)
-                    new_req.unredirected_hdrs.pop("Authorization", None)
-            return new_req
-        raise urllib.error.HTTPError(req.get_full_url(), code, f"HTTP redirect [{code}] ditolak untuk metode non-idempotent", headers, fp)
+        raise urllib.error.HTTPError(req.get_full_url(), code, f"HTTP redirect [{code}] ditolak untuk endpoint API Jira", headers, fp)
 
 class JiraClient:
     """Klien REST API Jira Cloud terisolasi menggunakan library bawaan urllib."""
@@ -36,6 +25,8 @@ class JiraClient:
             raise ValueError(f"Jira base_url wajib menggunakan protokol HTTPS. Ditemukan: '{base_url}'")
         if "@" in p.netloc:
             raise ValueError("Userinfo/kredensial dilarang dicantumkan di dalam URL base_url.")
+        if p.query or p.fragment:
+            raise ValueError("Base URL Jira dilarang memuat query string atau fragment.")
         
         self.base_url = f"{p.scheme}://{p.netloc}"
         self.email = email
@@ -44,7 +35,7 @@ class JiraClient:
         
         auth_str = f"{self.email}:{self.api_token}"
         self.auth_header = f"Basic {base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')}"
-        self.opener = urllib.request.build_opener(SafeRedirectHandler)
+        self.opener = urllib.request.build_opener(NoRedirectHandler)
 
     def _validate_issue_key(self, issue_key: str) -> str:
         clean = issue_key.strip().upper()
@@ -147,21 +138,28 @@ def extract_text_from_description(raw_desc: Any) -> str:
 
 def extract_test_case_references(description_text: str, test_cases_dir: Path) -> List[Path]:
     """
-    Mengekstrak referensi kasus uji (misal: TC-001) dari teks deskripsi tiket.
-    Fail-closed:
-    - Setiap referensi wajib menemukan tepat 1 berkas yang cocok di test_cases_dir.
-    - Jika ada lebih dari 1 berkas yang cocok (ambigu), melempar ValueError.
-    - Jika berkas tidak ditemukan, melempar FileNotFoundError.
+    Mengekstrak referensi kasus uji (misal: TC-001) dari bagian 'Test Cases' pada deskripsi tiket.
+    Jika tidak ada heading 'Test Cases', mencari pola TC-xxx di seluruh teks deskripsi.
+    Urutan kemunculan dipertahankan, deduplikasi case-insensitive.
     """
     if not test_cases_dir.exists():
-        raise FileNotFoundError(f"Direktori kasus uji tidak ditemukan: {test_cases_dir}")
+        test_cases_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pola ID: TC-xxx (contoh: TC-001, TC-999)
-    matches = sorted(list(set(re.findall(r'\b(TC-\d+)\b', description_text, re.IGNORECASE))))
+    # 1. Isolasi bagian 'Test Cases' jika ada
+    m_section = re.search(r'(?:###?\s*Test\s+Cases|h[1-6]\.\s*Test\s+Cases)(.*?)(?=(?:###?\s*|h[1-6]\.\s*|$))', description_text, re.DOTALL | re.IGNORECASE)
+    search_target = m_section.group(1) if m_section else description_text
+
+    raw_matches = re.findall(r'\b(TC-\d+)\b', search_target, re.IGNORECASE)
+    seen = set()
+    ordered_ids = []
+    for tc in raw_matches:
+        u = tc.upper()
+        if u not in seen:
+            seen.add(u)
+            ordered_ids.append(u)
+
     matched_files: List[Path] = []
-
-    for tc_id in matches:
-        pattern_id = tc_id.upper()
+    for pattern_id in ordered_ids:
         candidates = [
             f for f in test_cases_dir.glob("*.md")
             if f.name.upper().startswith(f"{pattern_id}-") or f.name.upper() == f"{pattern_id}.MD"
@@ -170,11 +168,11 @@ def extract_test_case_references(description_text: str, test_cases_dir: Path) ->
             matched_files.append(candidates[0])
         elif len(candidates) > 1:
             raise ValueError(
-                f"Referensi ambigu untuk '{tc_id}': ditemukan {len(candidates)} file yang cocok "
+                f"Referensi ambigu untuk '{pattern_id}': ditemukan {len(candidates)} file yang cocok "
                 f"({[c.name for c in candidates]}). Pastikan penamaan file unik."
             )
         else:
-            raise FileNotFoundError(f"Berkas untuk kasus uji '{tc_id}' tidak ditemukan di {test_cases_dir}.")
+            raise FileNotFoundError(f"Berkas untuk kasus uji '{pattern_id}' tidak ditemukan di {test_cases_dir}.")
 
     return matched_files
 
@@ -199,7 +197,14 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
     dur = meta.get("execution_duration_seconds", "-")
     actual = meta.get("actual_result", meta.get("error_message", "-"))
 
-    badge = "(/) *PASSED*" if verdict == "PASSED" else "(-)" if verdict == "BLOCKED" else "(x) *FAILED*"
+    if verdict == "PASSED":
+        badge = "(/) *PASSED*"
+    elif verdict == "BLOCKED":
+        badge = "(-) *BLOCKED*"
+    elif verdict == "ERROR":
+        badge = "(!) *ERROR*"
+    else:
+        badge = "(x) *FAILED*"
 
     lines = [
         f"h3. [SAQA Execution Report] {badge}",

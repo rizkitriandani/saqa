@@ -200,8 +200,10 @@ class TestJiraAdapter(unittest.TestCase):
     @patch("runner.adapters.jira.JiraClient.get_issue")
     @patch("runner.adapters.jira.JiraClient.attach_file")
     @patch("runner.adapters.jira.JiraClient.post_comment")
-    @patch("runner.engine.run_test_case")
-    def test_cmd_jira_process_no_publish_skips_mutations(self, mock_run, mock_comment, mock_attach, mock_get_issue):
+    @patch("cli.publish_artifacts")
+    @patch("cli.build_docx_report")
+    @patch("cli.run_test_case")
+    def test_cmd_jira_process_no_publish_skips_mutations(self, mock_run, mock_docx, mock_pub, mock_comment, mock_attach, mock_get_issue):
         mock_get_issue.return_value = {
             "key": "MED-300",
             "fields": {
@@ -218,6 +220,8 @@ class TestJiraAdapter(unittest.TestCase):
             "execution_duration_seconds": 1.0,
             "actual_result": "Success"
         }
+        mock_docx.return_value = Path("dummy_report.docx")
+
         with tempfile.TemporaryDirectory() as tmpdir:
             proj_dir = Path(tmpdir)
             (proj_dir / ".env").write_text(
@@ -233,7 +237,9 @@ class TestJiraAdapter(unittest.TestCase):
             args = argparse.Namespace(issue_key="MED-300", project_root=str(proj_dir), no_publish=True)
             ret = cmd_jira_process(args)
             self.assertEqual(ret, 0)
-            # Memastikan tidak ada pengunggahan attachment maupun komentar ke Jira saat flag --no-publish aktif
+            mock_run.assert_called_once()
+            # Memastikan tidak ada pengunggahan attachment, publikasi drive, maupun komentar ke Jira saat flag --no-publish aktif
+            mock_pub.assert_not_called()
             mock_attach.assert_not_called()
             mock_comment.assert_not_called()
 
