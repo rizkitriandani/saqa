@@ -219,5 +219,61 @@ class TestWebhookServer(unittest.TestCase):
             # Sisi server menutup koneksi setelah menerima header > 1MB
             self.assertTrue("Broken pipe" in str(e) or "Connection reset" in str(e))
 
+    def test_job_queue_atomic_claim_and_status_transitions(self):
+        from runner.adapters.job_queue import (
+            get_db_path,
+            enqueue_job,
+            claim_next_pending_job,
+            mark_job_status,
+            reconcile_interrupted_jobs_on_startup
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_root = Path(tmpdir)
+            db_path = get_db_path(proj_root)
+
+            # 1. Enqueue 2 jobs
+            job1_id, dup1 = enqueue_job(db_path, "proj-q", "evt_1", "MED-1", "local")
+            job2_id, dup2 = enqueue_job(db_path, "proj-q", "evt_2", "MED-2", "local")
+            self.assertFalse(dup1)
+            self.assertFalse(dup2)
+
+            # 2. Klaim atomik job 1 -> status otomatis menjadi RUNNING
+            claimed1 = claim_next_pending_job(db_path, "proj-q")
+            self.assertIsNotNone(claimed1)
+            self.assertEqual(claimed1["id"], job1_id)
+            self.assertEqual(claimed1["issue_key"], "MED-1")
+
+            # 3. Klaim atomik job 2 -> status otomatis menjadi RUNNING
+            claimed2 = claim_next_pending_job(db_path, "proj-q")
+            self.assertIsNotNone(claimed2)
+            self.assertEqual(claimed2["id"], job2_id)
+
+            # 4. Antrean kosong -> return None
+            claimed3 = claim_next_pending_job(db_path, "proj-q")
+            self.assertIsNone(claimed3)
+
+            # 5. Selesaikan job 1
+            mark_job_status(db_path, job1_id, "COMPLETED")
+
+            # 6. Simulasikan crash/restart saat job 2 masih RUNNING -> reconcile wajib ubah ke NEEDS_RECONCILIATION
+            reconcile_interrupted_jobs_on_startup(db_path, "proj-q")
+
+            import sqlite3
+            with sqlite3.connect(str(db_path)) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT status, error_message FROM webhook_jobs WHERE id = ?", (job2_id,))
+                row = cur.fetchone()
+                self.assertEqual(row[0], "NEEDS_RECONCILIATION")
+                self.assertIn("Interrupted", row[1])
+
+    def test_missing_secret_blocks_server_startup_fail_closed(self):
+        from runner.adapters.webhook_server import start_webhook_server
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty_proj = Path(tmpdir)
+            # Tanpa file .env / tanpa WEBHOOK_SECRET -> startup wajib melempar ValueError
+            with self.assertRaises(ValueError) as ctx:
+                start_webhook_server(project_root=empty_proj, allow_unauthenticated=False)
+            self.assertIn("WEBHOOK_SECRET wajib disetel", str(ctx.exception))
+
 if __name__ == "__main__":
     unittest.main()

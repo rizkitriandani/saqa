@@ -15,9 +15,9 @@ from runner.config import load_project_config, load_project_env
 from runner.adapters.job_queue import (
     get_db_path,
     enqueue_job,
-    has_active_job_for_issue,
+    claim_next_pending_job,
     mark_job_status,
-    get_next_pending_job
+    reconcile_interrupted_jobs_on_startup
 )
 
 logger = logging.getLogger("saqa.webhook")
@@ -135,7 +135,6 @@ def process_job_execution(job: dict, project_root: Path):
     runner = job["runner_target"]
     env_vars = load_project_env(project_root)
 
-    mark_job_status(db_path, job_id, "RUNNING")
     logger.info(f"🚀 [Worker] Memproses Job #{job_id} ({issue_key}) via {runner}...")
 
     try:
@@ -152,11 +151,11 @@ def process_job_execution(job: dict, project_root: Path):
                 logger.warning(f"⚠️ [Worker] Job #{job_id} ({issue_key}) selesai dengan status FAILED.")
         elif runner == "github":
             dispatch_github_actions(issue_key, env_vars)
-            mark_job_status(db_path, job_id, "COMPLETED")
+            mark_job_status(db_path, job_id, "DISPATCHED")
             logger.info(f"✅ [Worker] Job #{job_id} dispatched ke GitHub Actions.")
         elif runner == "gitlab":
             dispatch_gitlab_ci(issue_key, env_vars)
-            mark_job_status(db_path, job_id, "COMPLETED")
+            mark_job_status(db_path, job_id, "DISPATCHED")
             logger.info(f"✅ [Worker] Job #{job_id} dispatched ke GitLab CI.")
     except Exception as e:
         logger.error(f"❌ [Worker] Job #{job_id} ({issue_key}) error: {str(e)}")
@@ -170,7 +169,7 @@ def queue_worker_loop(project_root: Path, stop_event: threading.Event):
 
     while not stop_event.is_set():
         try:
-            job = get_next_pending_job(db_path, project_id)
+            job = claim_next_pending_job(db_path, project_id)
             if job:
                 process_job_execution(job, project_root)
             else:
@@ -231,7 +230,6 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
             if not incoming_secret and auth_header.startswith("Bearer "):
                 incoming_secret = auth_header.split("Bearer ", 1)[1].strip()
 
-            # Timing-safe comparison
             if not hmac.compare_digest(incoming_secret.encode("utf-8"), expected_secret.encode("utf-8")):
                 logger.warning("Permintaan ditolak: Secret token tidak cocok.")
                 self._send_json(401, {"error": "Unauthorized: Webhook secret invalid."})
@@ -239,15 +237,16 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
 
         # 2. Batas ukuran payload (Max 1 MiB)
         try:
-            content_len = int(self.headers.get("Content-Length", 0))
-            if content_len == 0:
+            content_len_header = self.headers.get("Content-Length")
+            if not content_len_header:
+                self._send_json(411, {"error": "Length Required: Header Content-Length wajib disertakan."})
+                return
+
+            content_len = int(content_len_header)
+            if content_len <= 0:
                 self._send_json(400, {"error": "Body JSON kosong."})
                 return
             if content_len > MAX_PAYLOAD_SIZE:
-                try:
-                    self.rfile.read(min(content_len, 65536))
-                except Exception:
-                    pass
                 self._send_json(413, {"error": f"Payload terlalu besar (maksimal {MAX_PAYLOAD_SIZE} bytes)."})
                 return
 
@@ -292,7 +291,6 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
         runner = self.runner_override or cfg.get("runner_target", "local")
         event_id = extract_event_id_from_payload(payload, body_bytes)
 
-        # Cek deduplikasi event ID terlebih dahulu
         job_id, is_duplicate = enqueue_job(db_path, project_id, event_id, issue_key, runner)
         if is_duplicate:
             logger.info(f"Event ID {event_id} sudah pernah tercatat sebelumnya. Mengabaikan event duplikat.")
@@ -304,22 +302,11 @@ class SaqaWebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # 7. Cek apakah tiket ini sudah memiliki eksekusi lain yang aktif
-        if has_active_job_for_issue(db_path, project_id, issue_key, exclude_event_id=event_id):
-            logger.info(f"Tiket {issue_key} sudah memiliki job aktif lain dalam antrean. Menandai SKIPPED.")
-            mark_job_status(db_path, job_id, "SKIPPED", error_message="Tiket sedang diproses oleh job lain.")
-            self._send_json(200, {
-                "status": "already_queued",
-                "job_id": job_id,
-                "issue_key": issue_key,
-                "message": "Pengujian untuk tiket ini sudah berada dalam antrean atau sedang berjalan."
-            })
-            return
-
         logger.info(f"📥 Enqueued Job #{job_id} untuk {issue_key} via {runner}. Mengembalikan HTTP 202.")
         self._send_json(202, {
             "status": "accepted",
             "job_id": job_id,
+            "event_id": event_id,
             "issue_key": issue_key,
             "runner": runner,
             "message": "Pekerjaan pengujian berhasil disimpan di antrean durable."
@@ -339,6 +326,21 @@ def start_webhook_server(
     if project_root is None:
         project_root = Path.cwd()
     project_root = Path(project_root).resolve()
+
+    # Preflight check: tolak startup jika WEBHOOK_SECRET tidak ada dan allow_unauthenticated=False
+    env_vars = load_project_env(project_root)
+    if not env_vars.get("WEBHOOK_SECRET") and not allow_unauthenticated:
+        raise ValueError(
+            "WEBHOOK_SECRET wajib disetel di .env proyek untuk menjalankan server webhook secara aman. "
+            "Gunakan flag --allow-unauthenticated jika hanya ingin pengujian lokal tanpa autentikasi."
+        )
+
+    db_path = get_db_path(project_root)
+    cfg = load_project_config(project_root)
+    project_id = cfg.get("project_id", project_root.name)
+
+    # Reconcile job yang terinterupsi saat restart sebelumnya
+    reconcile_interrupted_jobs_on_startup(db_path, project_id)
 
     class CustomHandler(SaqaWebhookHandler):
         pass

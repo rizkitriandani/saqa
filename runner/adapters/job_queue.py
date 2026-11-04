@@ -9,8 +9,8 @@ def get_db_path(project_root: Path) -> Path:
     return data_dir / "saqa_jobs.db"
 
 def init_job_database(db_path: Path):
-    """Inisialisasi tabel antrean kerja durable di SQLite."""
-    with sqlite3.connect(str(db_path), timeout=10.0) as conn:
+    """Inisialisasi tabel antrean kerja durable di SQLite dengan mode WAL."""
+    with sqlite3.connect(str(db_path), timeout=15.0) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS webhook_jobs (
@@ -19,7 +19,7 @@ def init_job_database(db_path: Path):
                 event_id TEXT NOT NULL,
                 issue_key TEXT NOT NULL,
                 runner_target TEXT NOT NULL,
-                status TEXT NOT NULL,
+                status TEXT NOT NULL, -- PENDING, RUNNING, COMPLETED, DISPATCHED, FAILED, NEEDS_RECONCILIATION
                 error_message TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -27,22 +27,37 @@ def init_job_database(db_path: Path):
             );
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_pending_jobs ON webhook_jobs(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_pending_jobs ON webhook_jobs(status, id);
         """)
+        conn.commit()
+
+def reconcile_interrupted_jobs_on_startup(db_path: Path, project_id: str):
+    """
+    Menandai job yang berstatus 'RUNNING' saat server mati/restart sebagai 'NEEDS_RECONCILIATION'.
+    Mencegah pengulangan eksekusi otomatis tanpa pemeriksaan status remote terlebih dahulu.
+    """
+    if not db_path.exists():
+        return
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with sqlite3.connect(str(db_path), timeout=15.0) as conn:
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_active_issues ON webhook_jobs(project_id, issue_key, status);
-        """)
+            UPDATE webhook_jobs
+            SET status = 'NEEDS_RECONCILIATION',
+                error_message = 'Interrupted: worker terminated while job was RUNNING.',
+                updated_at = ?
+            WHERE project_id = ? AND status = 'RUNNING';
+        """, (now_iso, project_id))
         conn.commit()
 
 def enqueue_job(db_path: Path, project_id: str, event_id: str, issue_key: str, runner_target: str) -> Tuple[Optional[int], bool]:
     """
-    Memasukkan job baru ke antrean dengan deduplikasi event_id secara durable.
+    Memasukkan job baru ke antrean dengan deduplikasi event_id secara durable di basis data.
     Mengembalikan (job_id, is_duplicate).
     """
     init_job_database(db_path)
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
-        with sqlite3.connect(str(db_path), timeout=10.0) as conn:
+        with sqlite3.connect(str(db_path), timeout=15.0) as conn:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO webhook_jobs (project_id, event_id, issue_key, runner_target, status, created_at, updated_at)
@@ -51,47 +66,21 @@ def enqueue_job(db_path: Path, project_id: str, event_id: str, issue_key: str, r
             conn.commit()
             return cur.lastrowid, False
     except sqlite3.IntegrityError:
-        # Event ID duplikat terdeteksi di level basis data
+        # Event ID duplikat terdeteksi di level primary/unique constraint
         return None, True
 
-def has_active_job_for_issue(db_path: Path, project_id: str, issue_key: str, exclude_event_id: Optional[str] = None) -> bool:
-    """Memeriksa apakah tiket yang sama sedang dalam status RUNNING atau PENDING untuk event lain."""
-    if not db_path.exists():
-        return False
-    with sqlite3.connect(str(db_path), timeout=10.0) as conn:
-        cur = conn.cursor()
-        if exclude_event_id:
-            cur.execute("""
-                SELECT id FROM webhook_jobs
-                WHERE project_id = ? AND issue_key = ? AND event_id != ? AND status IN ('PENDING', 'RUNNING')
-                LIMIT 1;
-            """, (project_id, issue_key, exclude_event_id))
-        else:
-            cur.execute("""
-                SELECT id FROM webhook_jobs
-                WHERE project_id = ? AND issue_key = ? AND status IN ('PENDING', 'RUNNING')
-                LIMIT 1;
-            """, (project_id, issue_key))
-        return cur.fetchone() is not None
-
-def mark_job_status(db_path: Path, job_id: int, status: str, error_message: Optional[str] = None):
-    """Memperbarui status pekerjaan secara durable."""
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with sqlite3.connect(str(db_path), timeout=10.0) as conn:
-        conn.execute("""
-            UPDATE webhook_jobs
-            SET status = ?, error_message = ?, updated_at = ?
-            WHERE id = ?;
-        """, (status, error_message, now_iso, job_id))
-        conn.commit()
-
-def get_next_pending_job(db_path: Path, project_id: str) -> Optional[Dict[str, Any]]:
-    """Mengambil pekerjaan berstatus PENDING tertua untuk dieksekusi worker."""
+def claim_next_pending_job(db_path: Path, project_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Klaim pekerjaan PENDING tertua secara atomik menggunakan BEGIN IMMEDIATE transaction.
+    Menjamin dua thread/worker tidak pernah mengklaim job yang sama (race condition prevention).
+    """
     if not db_path.exists():
         return None
-    with sqlite3.connect(str(db_path), timeout=10.0) as conn:
-        conn.row_factory = sqlite3.Row
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with sqlite3.connect(str(db_path), timeout=15.0) as conn:
+        conn.isolation_level = None  # Manual transaction control
         cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE;")
         cur.execute("""
             SELECT id, project_id, event_id, issue_key, runner_target, created_at
             FROM webhook_jobs
@@ -100,6 +89,33 @@ def get_next_pending_job(db_path: Path, project_id: str) -> Optional[Dict[str, A
             LIMIT 1;
         """, (project_id,))
         row = cur.fetchone()
-        if row:
-            return dict(row)
-    return None
+        if not row:
+            cur.execute("COMMIT;")
+            return None
+
+        job_id = row[0]
+        cur.execute("""
+            UPDATE webhook_jobs
+            SET status = 'RUNNING', updated_at = ?
+            WHERE id = ?;
+        """, (now_iso, job_id))
+        cur.execute("COMMIT;")
+        return {
+            "id": row[0],
+            "project_id": row[1],
+            "event_id": row[2],
+            "issue_key": row[3],
+            "runner_target": row[4],
+            "created_at": row[5]
+        }
+
+def mark_job_status(db_path: Path, job_id: int, status: str, error_message: Optional[str] = None):
+    """Memperbarui status pekerjaan secara durable."""
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with sqlite3.connect(str(db_path), timeout=15.0) as conn:
+        conn.execute("""
+            UPDATE webhook_jobs
+            SET status = ?, error_message = ?, updated_at = ?
+            WHERE id = ?;
+        """, (status, error_message, now_iso, job_id))
+        conn.commit()
