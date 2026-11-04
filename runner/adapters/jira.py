@@ -291,16 +291,23 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
     docx_path = run_dir / "report.docx"
     video_path = run_dir / "evidence.webm"
 
-    # 2. Upload DOCX jika ada dan belum tercatat di status
-    if docx_path.exists():
-        docx_name = docx_path.name
-        if docx_name not in jira_status["attachments"] or force:
-            att_docx = client.attach_file(issue_key, docx_path)
-            if not att_docx or not att_docx[0].get("id"):
-                raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
-            jira_status["attachments"][docx_name] = att_docx[0].get("id")
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+    # Verifikasi integritas artefak: laporan wajib ada
+    if not docx_path.exists():
+        raise FileNotFoundError(f"Laporan report.docx tidak ditemukan di {run_dir}. Publikasi dibatalkan.")
+
+    # Jika metadata mencatat file video, pastikan file rekaman ada di disk
+    if meta.get("artifacts", {}).get("video") and not video_path.exists():
+        raise FileNotFoundError(f"Berkas video bukti yang tercatat di metadata tidak ditemukan di {video_path}.")
+
+    # 2. Upload DOCX jika belum tercatat di status
+    docx_name = docx_path.name
+    if docx_name not in jira_status["attachments"] or force:
+        att_docx = client.attach_file(issue_key, docx_path)
+        if not att_docx or not att_docx[0].get("id"):
+            raise RuntimeError(f"Gagal mengunggah attachment {docx_name}: respons Jira tidak memuat ID file.")
+        jira_status["attachments"][docx_name] = att_docx[0].get("id")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
 
     # 3. Upload Video jika ada dan belum tercatat di status
     if video_path.exists():

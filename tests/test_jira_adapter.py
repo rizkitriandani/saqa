@@ -303,10 +303,11 @@ class TestJiraAdapter(unittest.TestCase):
 
             from runner.adapters.jira import publish_jira_artifacts
 
-            # Panggilan pertama: docx sukses, tapi video raise exception
-            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], RuntimeError("Upload video timeout")]
-            with self.assertRaises(RuntimeError):
+            # Panggilan pertama: docx sukses, tapi video raise exception definite API error 413 (Payload Too Large)
+            mock_attach.side_effect = [[{"id": "att_docx_1", "filename": "report.docx"}], RuntimeError("Jira API Error [413] on POST /rest/api/2/issue/MED-600/attachments")]
+            with self.assertRaises(RuntimeError) as ctx:
                 publish_jira_artifacts("RUN_PARTIAL", "MED-600", self.client, proj_dir)
+            self.assertIn("413", str(ctx.exception))
 
             # Verifikasi metadata mencatat docx tapi published masih False
             with open(meta_path) as f:
@@ -315,7 +316,7 @@ class TestJiraAdapter(unittest.TestCase):
             self.assertIn("report.docx", saved_meta["jira_publish_status"]["attachments"])
             self.assertNotIn("evidence.webm", saved_meta["jira_publish_status"]["attachments"])
 
-            # Panggilan kedua (retry): docx TIDAK boleh diunggah ulang! Video diunggah dan komentar diposting.
+            # Panggilan kedua (retry setelah isu diperbaiki): docx TIDAK boleh diunggah ulang! Video diunggah dan komentar diposting.
             mock_attach.reset_mock()
             mock_comment.reset_mock()
             mock_attach.side_effect = [[{"id": "att_vid_2", "filename": "evidence.webm"}]]
@@ -328,6 +329,24 @@ class TestJiraAdapter(unittest.TestCase):
             mock_attach.assert_called_once()
             self.assertEqual(mock_attach.call_args[0][1].name, "evidence.webm")
             mock_comment.assert_called_once()
+
+    def test_publish_jira_missing_docx_fails_closed(self):
+        # Jika report.docx tidak ditemukan, publikasi wajib gagal (fail-closed)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_NO_DOCX"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_NO_DOCX",
+                "test_case_id": "TC-001",
+                "verdict": "PASSED"
+            }), encoding="utf-8")
+
+            from runner.adapters.jira import publish_jira_artifacts
+            with self.assertRaises(FileNotFoundError) as ctx:
+                publish_jira_artifacts("RUN_NO_DOCX", "MED-700", self.client, proj_dir)
+            self.assertIn("report.docx tidak ditemukan", str(ctx.exception))
 
     @patch("runner.adapters.jira.JiraClient.get_issue")
     def test_cli_jira_project_key_allowlist_enforced(self, mock_get_issue):
