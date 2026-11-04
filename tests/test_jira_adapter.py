@@ -397,6 +397,41 @@ class TestJiraAdapter(unittest.TestCase):
             mock_attach.assert_not_called()
             mock_comment.assert_not_called()
 
+    @patch("runner.adapters.jira.JiraClient.attach_file")
+    @patch("runner.adapters.jira.JiraClient.post_comment")
+    def test_publish_jira_http_503_server_error_blocks_replay(self, mock_comment, mock_attach):
+        # Skenario: HTTP 503 Server Error (hasil remote tidak dapat dipastikan apakah entitas sudah terbuat)
+        # Status wajib menjadi NEEDS_RECONCILIATION dan memblokir replay otomatis
+        from runner.adapters.jira import JiraAPIError, publish_jira_artifacts
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir)
+            run_dir = proj_dir / "artifacts" / "RUN_503"
+            run_dir.mkdir(parents=True)
+            meta_path = run_dir / "metadata.json"
+            meta_path.write_text(json.dumps({
+                "run_id": "RUN_503",
+                "test_case_id": "TC-001",
+                "verdict": "PASSED"
+            }), encoding="utf-8")
+            (run_dir / "report.docx").write_bytes(b"PK0304")
+            (run_dir / "evidence.webm").write_bytes(b"WEBM01")
+
+            mock_attach.side_effect = JiraAPIError(503, "Service Unavailable")
+            with self.assertRaises(JiraAPIError):
+                publish_jira_artifacts("RUN_503", "MED-850", self.client, proj_dir)
+
+            with open(meta_path) as f:
+                saved = json.load(f)
+            self.assertEqual(saved["jira_publish_status"]["status"], "NEEDS_RECONCILIATION")
+            self.assertEqual(saved["jira_publish_status"]["in_flight_operation"], "upload_docx")
+
+            # Replay wajib diblokir
+            mock_attach.reset_mock()
+            with self.assertRaises(RuntimeError) as ctx:
+                publish_jira_artifacts("RUN_503", "MED-850", self.client, proj_dir, force=True)
+            self.assertIn("NEEDS_RECONCILIATION", str(ctx.exception))
+            mock_attach.assert_not_called()
+
     def test_publish_jira_missing_docx_fails_closed(self):
         # Jika report.docx tidak ditemukan, publikasi wajib gagal (fail-closed)
         with tempfile.TemporaryDirectory() as tmpdir:

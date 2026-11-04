@@ -252,6 +252,8 @@ def format_jira_verdict_comment(meta: dict, attachments: list, drive_info: dict 
     return "\n".join(lines)
 
 
+DEFINITE_CLIENT_REJECTION_CODES = {400, 401, 403, 404, 413, 422, 429}
+
 def _atomic_write_json(file_path: Path, data: dict):
     """Menulis berkas JSON secara atomik menggunakan file sementara untuk mencegah korupsi metadata jika proses terputus."""
     tmp_path = file_path.with_suffix(".tmp")
@@ -344,9 +346,12 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
             jira_status["in_flight_operation"] = None
             _atomic_write_json(meta_path, meta)
         except JiraAPIError as e:
-            # Definite client API rejection (misal: 413, 400) -> entitas pasti tidak terbuat di remote
-            jira_status["in_flight_operation"] = None
-            _atomic_write_json(meta_path, meta)
+            if e.status_code in DEFINITE_CLIENT_REJECTION_CODES:
+                jira_status["in_flight_operation"] = None
+                _atomic_write_json(meta_path, meta)
+            else:
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                _atomic_write_json(meta_path, meta)
             raise
         except Exception:
             # Indeterminate failure (Timeout, Disconnect, dsb)
@@ -371,8 +376,12 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
                 jira_status["in_flight_operation"] = None
                 _atomic_write_json(meta_path, meta)
             except JiraAPIError as e:
-                jira_status["in_flight_operation"] = None
-                _atomic_write_json(meta_path, meta)
+                if e.status_code in DEFINITE_CLIENT_REJECTION_CODES:
+                    jira_status["in_flight_operation"] = None
+                    _atomic_write_json(meta_path, meta)
+                else:
+                    jira_status["status"] = "NEEDS_RECONCILIATION"
+                    _atomic_write_json(meta_path, meta)
                 raise
             except Exception:
                 jira_status["status"] = "NEEDS_RECONCILIATION"
@@ -396,8 +405,12 @@ def publish_jira_artifacts(run_id: str, issue_key: str, client: JiraClient, proj
             jira_status["in_flight_operation"] = None
             _atomic_write_json(meta_path, meta)
         except JiraAPIError as e:
-            jira_status["in_flight_operation"] = None
-            _atomic_write_json(meta_path, meta)
+            if e.status_code in DEFINITE_CLIENT_REJECTION_CODES:
+                jira_status["in_flight_operation"] = None
+                _atomic_write_json(meta_path, meta)
+            else:
+                jira_status["status"] = "NEEDS_RECONCILIATION"
+                _atomic_write_json(meta_path, meta)
             raise
         except Exception:
             jira_status["status"] = "NEEDS_RECONCILIATION"
