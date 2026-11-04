@@ -22,8 +22,8 @@ from runner.adapters.jira import (
 class TestJiraAdapter(unittest.TestCase):
 
     def setUp(self):
-        self.base_url = "https://medlinx.atlassian.net"
-        self.email = "qa@medlinx.id"
+        self.base_url = "https://example.atlassian.net"
+        self.email = "qa@example.com"
         self.token = "dummy_api_token_12345"
         self.client = JiraClient(self.base_url, self.email, self.token)
 
@@ -188,7 +188,7 @@ class TestJiraAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             proj_dir = Path(tmpdir)
             (proj_dir / ".env").write_text(
-                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=tester@medlinx.id\nJIRA_API_TOKEN=fake_token\n",
+                "JIRA_BASE_URL=https://example.atlassian.net\nJIRA_EMAIL=tester@example.com\nJIRA_API_TOKEN=fake_token\n",
                 encoding="utf-8"
             )
             from cli import cmd_jira_inspect
@@ -225,7 +225,7 @@ class TestJiraAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             proj_dir = Path(tmpdir)
             (proj_dir / ".env").write_text(
-                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=t@medlinx.id\nJIRA_API_TOKEN=tok\n",
+                "JIRA_BASE_URL=https://example.atlassian.net\nJIRA_EMAIL=t@example.com\nJIRA_API_TOKEN=tok\n",
                 encoding="utf-8"
             )
             tc_dir = proj_dir / "test-cases"
@@ -465,7 +465,7 @@ class TestJiraAdapter(unittest.TestCase):
                 "outputs": [{"type": "local"}]
             }), encoding="utf-8")
             (proj_dir / ".env").write_text(
-                "JIRA_BASE_URL=https://medlinx.atlassian.net\nJIRA_EMAIL=t@m.id\nJIRA_API_TOKEN=tok\n",
+                "JIRA_BASE_URL=https://example.atlassian.net\nJIRA_EMAIL=t@example.com\nJIRA_API_TOKEN=tok\n",
                 encoding="utf-8"
             )
             from cli import cmd_jira_inspect

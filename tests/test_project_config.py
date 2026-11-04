@@ -92,7 +92,7 @@ class TestProjectConfig(unittest.TestCase):
 
             # Memastikan saqa.json tidak memuat kata sandi atau kredensial rahasia
             self.assertNotIn("password_value", cfg_text.lower())
-            self.assertNotIn("Dawaipagi", cfg_text)
+            self.assertNotIn("sample_secret_password", cfg_text)
             self.assertIn("your_password_here", example_text)
 
     def test_cli_config_approve_run_end_to_end(self):

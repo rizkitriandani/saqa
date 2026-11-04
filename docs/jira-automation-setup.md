@@ -2,7 +2,7 @@
 
 *Tanggal: 2026-11-04*  
 *Workspace: `/root/dev/sangQA`*  
-*Target Instance: `https://medlinx.atlassian.net`*
+*Target Instance: `https://your-company.atlassian.net`*
 
 Dokumen ini menjelaskan langkah demi langkah cara mengonfigurasi otomatisasi di Jira Cloud agar ketika kartu tiket dipindahkan statusnya (misal ke `In Testing` atau `In QA`), Jira secara otomatis memicu pengujian browser di GitHub Actions, lalu menerima lampiran laporan DOCX, video WebM, dan komentar hasil pengujian.
 
@@ -14,11 +14,11 @@ Sebelum membuat aturan di Jira, pastikan secrets telah ditambahkan pada reposito
 
 | Secret Name | Deskripsi | Contoh Nilai |
 | :--- | :--- | :--- |
-| `DEV_BASE_URL` | URL target lingkungan staging izihealth | `https://dev-bcalife.izihealth.co.id/` |
-| `QA_USERNAME` | Akun staf uji coba staging | `superuser` |
-| `QA_PASSWORD` | Kata sandi akun uji coba | `********` |
-| `JIRA_BASE_URL` | URL dasar Jira Cloud Anda | `https://medlinx.atlassian.net` |
-| `JIRA_EMAIL` | Email akun Atlassian pengunggah laporan | `qa@medlinx.id` |
+| `DEV_BASE_URL` | URL target lingkungan staging | `https://staging.example.com/` |
+| `QA_USERNAME` | Akun staf uji coba staging | `test_user` |
+| `QA_PASSWORD` | Kata sandi akun uji coba | `your_secret_password` |
+| `JIRA_BASE_URL` | URL dasar Jira Cloud Anda | `https://your-company.atlassian.net` |
+| `JIRA_EMAIL` | Email akun Atlassian pengunggah laporan | `qa@example.com` |
 | `JIRA_API_TOKEN` | API Token Jira ([Buat di sini](https://id.atlassian.com/manage-profile/security/api-tokens)) | `ATATT3xFfGF0...` |
 | `GOOGLE_DRIVE_FOLDER_ID` *(Opsional)* | ID folder Shared Drive jika ingin upload ke Drive | `1Z68ydb1eCc0...` |
 | `GOOGLE_APPLICATION_CREDENTIALS_JSON` *(Opsional)* | Isi teks JSON Service Account untuk Drive | `{"type": "service_account", ...}` |
@@ -41,7 +41,7 @@ Jira Automation membutuhkan Personal Access Token GitHub untuk mengirimkan webho
 
 ## 3. Konfigurasi Aturan Otomatisasi di Jira Cloud
 
-Buka board proyek Anda di `https://medlinx.atlassian.net`:
+Buka board proyek Anda di `https://your-company.atlassian.net`:
 
 1. Klik menu **Project settings** (di sidebar kiri bawah) → pilih **Automation**.
 2. Klik tombol **Create rule** di pojok kanan atas.

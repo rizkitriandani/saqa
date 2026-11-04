@@ -1,32 +1,43 @@
 # SAQA: AI-Assisted Browser E2E QA Automation
 
-SAQA is a modular browser QA automation engine and AI agent skill. It bridges natural-language test scenario authoring with Playwright execution, visual evidence capture (video and screenshots), and Google Docs reporting.
+SAQA is a modular, multi-project browser QA automation engine and AI agent skill. It bridges natural-language test authoring with Playwright execution, visual evidence capture (video recordings and step screenshots), AI failure diagnostics, Google Docs reporting, and Jira Cloud integration.
 
 ---
 
-## What SAQA Does
+## 3-Pillar Orthogonal Architecture
 
-1. **AI Authoring (`SKILL.md`)**: QA writes test scenarios in natural language (English or Indonesian); the agent drafts a structured test case.
-2. **Human Approval Gate**: Every draft starts as `pending`. An operator inspects the draft and approves it with `cli.py approve <path>`, which signs it with a canonical SHA-256 content hash.
-3. **Core Runner**: Executes approved Markdown steps (`navigate`, `fill`, `click`, `select`, `wait`, `assert`) via Playwright Chromium.
-4. **Evidence & Reports**: Records WebM video per run, takes PNG screenshots, compiles a DOCX report with embedded private images, and optionally converts it to a native Google Doc in a Google Workspace Shared Drive.
+SAQA separates testing responsibilities into three decoupled aspects:
+
+```text
+┌───────────────────────────────┐     ┌───────────────────────────────┐     ┌───────────────────────────────┐
+│       1. INPUT ASPECT         │     │       2. PROCESS ASPECT       │     │       3. OUTPUT ASPECT        │
+│ • CLI (Natural Language / MD) │ ──► │ • Human Approval Gate (Hash)  │ ──► │ • Local Artifacts (Video, PNG)│
+│ • Repo Test Cases (*.md)      │     │ • Playwright Chromium Runner  │     │ • Google Drive & Docs Native  │
+│ • Jira Cloud Issues (inspect) │     │ • Strict Generic Assertions   │     │ • Jira Comments & Attachments │
+│ • [Roadmap: GDocs Watcher]    │     │ • Fail-Closed Preflight Checks│     │ • [Roadmap: Slack / Webhook]  │
+└───────────────────────────────┘     └───────────────────────────────┘     └───────────────────────────────┘
+```
 
 ---
 
-## Current Status & Availability
+## Feature Matrix
 
-- **Active & Tested**:
-  - Deterministic Playwright execution from Markdown files (`test-cases/*.md`).
-  - Strict generic assertions (`url contains`, `heading contains`, `text contains`, `element is visible`).
-  - Local evidence generation (`artifacts/<RUN_ID>/` with video, screenshots, metadata, and DOCX).
-  - Google Drive & Google Docs native publishing with embedded screenshots and clickable video links.
-  - Multi-project configuration via `saqa.json` with isolated environments and outputs.
-  - Pi Coding Agent skill (`.agents/skills/saqa/SKILL.md`) and prompt template (`/saqa [config|run|approve|list]`).
-- **Roadmap / Not Yet Implemented**:
-  - Jira webhook trigger and automatic issue comment feedback.
-  - Google Docs external file watcher.
-  - Autonomous AI execution mode (`Execution Mode: ai` is currently rejected fail-closed).
-  - Hermes runtime binary verification (skill directory linked; binary not yet installed on this server).
+| Capability | Status | Description |
+| :--- | :---: | :--- |
+| **Playwright Runner** | ✅ Active | Deterministic browser automation (`navigate`, `fill`, `click`, `select`, `wait`, `assert`). |
+| **Strict Assertion Compiler** | ✅ Active | Fail-closed validation for URL, heading, text, and element visibility. |
+| **Human Approval Gate** | ✅ Active | SHA-256 canonical content hash verification; content drift blocks execution. |
+| **Visual Evidence Capture** | ✅ Active | Full WebM video recording and per-step PNG screenshots for every run. |
+| **Private DOCX Reports** | ✅ Active | Compiles reports with embedded private screenshots and clickable video hyperlinks. |
+| **Google Drive & Docs Export** | ✅ Active | Converts DOCX to native Google Docs and uploads video to dedicated Shared Drive folders. |
+| **AI Test Case Auditor** | ✅ Active | Pre-execution sanity checks on scenario logic, selectors, and assertions (`/saqa audit`). |
+| **AI Failure Diagnostics** | ✅ Active | Post-execution visual screenshot analysis and root-cause explanation (`/saqa diagnose`). |
+| **Multi-Project Isolation** | ✅ Active | Isolated environments, allowlists, and outputs configured per project via `saqa.json`. |
+| **Jira Cloud Integration** | ✅ Active | Inspect tickets, run referenced tests, and attach DOCX/video + verdict comments (`cli.py jira`). |
+| **Automated CI/CD Trigger** | ✅ Active | GitHub Actions runner triggered via Jira Automation (`.github/workflows/saqa-jira.yml`). |
+| **Pi Coding Agent Skill** | ✅ Active | Portable `SKILL.md` and prompt template enabling `/saqa` slash commands. |
+| **Hermes Agent Support** | ⏳ Roadmap | Skill directory linked; live Hermes binary execution pending local runtime setup. |
+| **Google Docs External Watcher** | ⏳ Roadmap | Direct synchronization from Google Drive folders as test case source. |
 
 ---
 
@@ -34,7 +45,8 @@ SAQA is a modular browser QA automation engine and AI agent skill. It bridges na
 
 - **Python**: 3.10 or higher.
 - **Operating System**: Linux (Ubuntu/Debian tested) or macOS.
-- **Google Workspace Shared Drive**: Required **only** if enabling Google Drive / Docs export. *(Google Service Accounts have a 0-byte quota on personal My Drive and require a Shared Drive to own files).*
+- **Google Workspace Shared Drive**: Required **only** if enabling Google Drive / Docs export. *(Google Service Accounts have a 0-byte quota on personal My Drive and require a Shared Drive).*
+- **Jira Cloud Account**: Required **only** if enabling Jira ticket inspection or automatic commenting.
 
 ---
 
@@ -42,14 +54,14 @@ SAQA is a modular browser QA automation engine and AI agent skill. It bridges na
 
 ### 1. Clone & Set Engine Root
 
-Clone the repository and set `SAQA_ROOT`:
+Clone SAQA to your machine and define `SAQA_ROOT`:
 
 ```bash
 git clone https://github.com/rizkitriandani/saqa.git /path/to/saqa
 cd /path/to/saqa
 export SAQA_ROOT="$(pwd)"
 ```
-*(Add `export SAQA_ROOT=/path/to/saqa` to your `~/.bashrc` or `~/.zshrc` profile).*
+*(Tip: Add `export SAQA_ROOT=/path/to/saqa` to your `~/.bashrc` or `~/.zshrc`).*
 
 ### 2. Python Virtual Environment
 
@@ -59,18 +71,19 @@ Create and activate a virtual environment, then install runtime dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install required packages
+# Install core dependencies
 pip install playwright python-docx google-api-python-client google-auth
 
 # Install Playwright browser and Linux system dependencies
 python3 -m playwright install --with-deps chromium
 ```
 
-Verify your installation by running the test suite:
+Run the offline unit test suite to verify the installation:
 
 ```bash
 python3 -m unittest discover tests
 ```
+*(All 46+ tests should pass with `OK`).*
 
 ---
 
@@ -89,37 +102,40 @@ python3 -m unittest discover tests
    ```
 
 3. **Activate in Pi**:
-   Launch Pi from the shell where `.venv` is active, then reload prompts:
+   Launch Pi from the shell where `.venv` is active, then reload prompt templates:
    ```text
    /reload
    ```
 
 ---
 
-## Configuring a Project
+## Project Configuration & Onboarding
 
-Each target project has its own `saqa.json` and `.env` at its project root.
+SAQA supports multiple projects independently. Each project maintains its non-secret settings in `saqa.json` at its project root.
 
-### Via Pi Slash Command (`/saqa config`)
-In your project directory, run:
+### Option A: Via Pi Slash Command (`/saqa config`)
+Inside your project directory in Pi, type:
 ```text
 /saqa config
 ```
-Follow the interactive prompts to define your project slug, base URL, and whether to enable Google Drive exports.
+Pi will interactively ask:
+1. **Project ID / slug**: (default: current directory name).
+2. **Target Dev Base URL**: Staging URL to test (e.g., `https://staging.example.com`).
+3. **Google Drive Export**: Enable/disable automated Google Docs publishing.
 
-### Via CLI
-Run from your target project directory:
+### Option B: Via CLI
+From your target project directory:
 ```bash
-python3 "$SAQA_ROOT/cli.py" config --project-root . --project-id my-project --base-url "https://dev.example.com" [--gdrive]
+python3 "$SAQA_ROOT/cli.py" config --project-root . --project-id my-project --base-url "https://staging.example.com" [--gdrive]
 ```
 
-This creates:
-- `saqa.json`: Non-secret project configuration.
-- `.env.example`: Template of required environment variables.
+This generates:
+- `saqa.json`: Non-secret configuration file.
+- `.env.example`: Template listing required secrets.
 
 ---
 
-## Environment & Credentials Setup
+## Environment & Secrets Setup
 
 In your project directory, copy `.env.example` to `.env`:
 
@@ -128,16 +144,21 @@ cp -i .env.example .env
 chmod 600 .env
 ```
 
-Fill in your test credentials:
+Populate the required environment variables:
 
 ```bash
-DEV_BASE_URL=https://dev.example.com
+DEV_BASE_URL=https://staging.example.com/
 QA_USERNAME=test_user
-QA_PASSWORD=your_password_here
+QA_PASSWORD=your_secure_password_here
 
-# Required only if --gdrive was enabled during config:
+# Required only if Google Drive output is enabled:
 GOOGLE_DRIVE_FOLDER_ID=your_shared_drive_folder_id
 GOOGLE_APPLICATION_CREDENTIALS=credentials/service-account.json
+
+# Required only if Jira Cloud integration is used:
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_EMAIL=qa@your-company.com
+JIRA_API_TOKEN=your_jira_api_token
 ```
 
 If using Google Drive:
@@ -150,70 +171,104 @@ chmod 600 credentials/service-account.json
 
 ---
 
-## Day-to-Day QA Workflow
+## Daily QA Workflow
 
 ### 1. Authoring a Test Case
 Ask your AI agent in natural language:
-> *"Use saqa to create a test case for verifying login on dev."*
+> *"Use saqa to create a test case for user authentication on staging."*
 
-The agent writes a draft to `test-cases/TC-xxx.md` with:
-```markdown
-- **Execution Mode**: deterministic
-- **Approval Status**: pending
+The agent writes a draft to `test-cases/TC-001-login.md` with `Approval Status: pending`.
+
+### 2. Pre-Execution Audit (`/saqa audit`)
+Ask the AI to cross-check the test case before running:
+```text
+/saqa audit test-cases/TC-001-login.md
 ```
-*(See `docs/test-case-contract.md` for format specifications).*
+The AI verifies step logic, checks for ambiguous button/input targets, validates strict assertion syntax, and provides actionable suggestions.
 
-### 2. Review & Approval Gate
-Review the generated steps. When ready, approve the test case to calculate its SHA-256 canonical hash:
-
+### 3. Review & Approval Gate
+When satisfied with the steps, approve the test case to seal it with its canonical SHA-256 hash:
 ```bash
-python3 "$SAQA_ROOT/cli.py" approve test-cases/TC-xxx.md --project-root .
+python3 "$SAQA_ROOT/cli.py" approve test-cases/TC-001-login.md --project-root .
 ```
+*(If any step or assertion is modified later, the hash will mismatch and the runner will abort execution with `BLOCKED`).*
 
-### 3. Execution & Local Verification
-Run the test locally without publishing:
-
+### 4. Running the Test Locally
+Execute the test locally without publishing:
 ```bash
-python3 "$SAQA_ROOT/cli.py" run test-cases/TC-xxx.md --no-publish --project-root .
+python3 "$SAQA_ROOT/cli.py" run test-cases/TC-001-login.md --no-publish --project-root .
 ```
 
-Inspect local artifacts under `artifacts/<RUN_ID>/`:
+Artifacts are preserved in `artifacts/<RUN_ID>/`:
 - `evidence.webm`: Full video recording.
 - `report.docx`: Formatted report with embedded screenshots.
 - `metadata.json`: Step logs, timestamps, and verdict.
 
-### 4. Publish to Google Drive & Docs
-When ready to share:
+### 5. AI Failure Diagnostics (`/saqa diagnose`)
+If a test returns `FAILED` or `BLOCKED`:
+```text
+/saqa diagnose RUN_20261104_xxx
+```
+The AI inspects the failure screenshot, analyzes UI error states (e.g., locked account alerts, disabled buttons, validation hints), and attaches a root-cause explanation to the report.
 
+### 6. Publishing Reports
+Publish local artifacts to Google Drive:
 ```bash
 python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> --project-root .
 ```
 
 ---
 
-## CLI Reference
+## Jira Cloud Integration
+
+### Manual Ticket Inspection & Execution
+- **Inspect a Ticket (Read-Only)**:
+  ```bash
+  python3 "$SAQA_ROOT/cli.py" jira inspect MED-101 --project-root .
+  ```
+  *(Checks ticket status, summary, and extracts referenced test cases under the `Test Cases` heading).*
+
+- **Execute & Attach to Jira**:
+  ```bash
+  python3 "$SAQA_ROOT/cli.py" jira process MED-101 --project-root .
+  ```
+  *(Runs referenced tests, uploads `report.docx` and `evidence.webm` to the ticket's attachments, and posts a verdict summary comment).*
+
+### Automated CI/CD Execution (Jira Webhook ➔ GitHub Actions)
+See **[`docs/jira-automation-setup.md`](docs/jira-automation-setup.md)** for a step-by-step guide on setting up a Jira Cloud Automation Rule that triggers `.github/workflows/saqa-jira.yml` when cards move to `In Testing`.
+
+---
+
+## CLI Reference Summary
 
 ```bash
-# Configure project profile
-python3 "$SAQA_ROOT/cli.py" config [--project-root <path>] [--project-id <id>] [--base-url <url>] [--gdrive] [--overwrite]
+# Project configuration
+python3 "$SAQA_ROOT/cli.py" config [--project-root <path>] [--project-id <id>] [--base-url <url>] [--gdrive]
 
-# Approve a test case (calculates SHA-256 canonical hash)
+# Approve test case (calculates SHA-256 hash)
 python3 "$SAQA_ROOT/cli.py" approve <path> [--project-root <path>]
 
-# Run a test case
+# Execute test case
 python3 "$SAQA_ROOT/cli.py" run <path> [--no-publish] [--project-root <path>]
 
-# Publish local run artifacts to Google Drive
-python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> [--force] [--project-root <path>]
+# Diagnose failed run with AI
+python3 "$SAQA_ROOT/cli.py" diagnose <RUN_ID> [--attach "<analysis>"] [--project-root <path>]
 
-# List execution history for the project
+# Publish artifacts to Google Drive or Jira
+python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> [--jira-issue <KEY>] [--force] [--project-root <path>]
+
+# Jira ticket operations
+python3 "$SAQA_ROOT/cli.py" jira inspect <ISSUE_KEY> [--project-root <path>]
+python3 "$SAQA_ROOT/cli.py" jira process <ISSUE_KEY> [--no-publish] [--project-root <path>]
+
+# View run history
 python3 "$SAQA_ROOT/cli.py" list [--project-root <path>]
 ```
 
 ---
 
-## Known Limitations
+## Security & Known Limitations
 
 - **Local Hash Scope**: The SHA-256 approval hash detects unintended local edits to steps and assertions. It does not authenticate reviewer identities or provide multi-user cryptographic signatures.
-- **Cross-Origin Navigation**: Preflight validation blocks navigation outside configured origins; runtime redirect defense across third-party domains is subject to ongoing hardening.
-- **Sensitive Data**: Password substitution is restricted to `fill` action values, but test scenarios should always run against synthetic test accounts in staging environments.
+- **Credential Safety**: Passwords (`QA_PASSWORD`) are restricted exclusively to `fill` action values and are never written to test Markdown or URLs.
+- **Idempotency & Replays**: Jira uploads track in-flight operations with atomic writes. Indeterminate errors (5xx server errors, network disconnects) enter `NEEDS_RECONCILIATION` to prevent duplicate remote attachments.
