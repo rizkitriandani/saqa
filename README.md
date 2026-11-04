@@ -1,222 +1,209 @@
 # SAQA: AI-Assisted Browser E2E QA Automation
 
-SAQA is a modular, vendor-neutral browser QA automation engine and AI agent skill. It bridges natural-language test scenario authoring with strict, deterministic Playwright execution, visual evidence capture, and automated Google Docs reporting.
+SAQA is a modular browser QA automation engine and AI agent skill. It bridges natural-language test scenario authoring with Playwright execution, visual evidence capture (video and screenshots), and Google Docs reporting.
 
 ---
 
-## Architecture: 3-Pillar Orthogonal Design
+## What SAQA Does
 
-```text
-┌───────────────────────────────┐     ┌───────────────────────────────┐     ┌───────────────────────────────┐
-│       1. INPUT ASPECT         │     │       2. PROCESS ASPECT       │     │       3. OUTPUT ASPECT        │
-│ • CLI (Natural language / MD) │ ──► │ • Human Approval Gate (Hash)  │ ──► │ • Local Artifacts (Video, PNG)│
-│ • Repo test cases (*.md)      │     │ • Playwright Engine           │     │ • Google Drive & Docs Native  │
-│ • [Roadmap: Jira Webhook]     │     │ • Strict Generic Assertions   │     │ • [Roadmap: Jira Comments]    │
-│ • [Roadmap: Google Docs Sync] │     │ • Fail-Closed Validation      │     │                               │
-└───────────────────────────────┘     └───────────────────────────────┘     └───────────────────────────────┘
-```
+1. **AI Authoring (`SKILL.md`)**: QA writes test scenarios in natural language (English or Indonesian); the agent drafts a structured test case.
+2. **Human Approval Gate**: Every draft starts as `pending`. An operator inspects the draft and approves it with `cli.py approve <path>`, which signs it with a canonical SHA-256 content hash.
+3. **Core Runner**: Executes approved Markdown steps (`navigate`, `fill`, `click`, `select`, `wait`, `assert`) via Playwright Chromium.
+4. **Evidence & Reports**: Records WebM video per run, takes PNG screenshots, compiles a DOCX report with embedded private images, and optionally converts it to a native Google Doc in a Google Workspace Shared Drive.
 
 ---
 
-## Feature Status Matrix
+## Current Status & Availability
 
-| Capability | Status | Description |
-| :--- | :---: | :--- |
-| **CLI & Repo Input** | ✅ Active | Reads structured Markdown test cases from repositories or local files. |
-| **Deterministic Playwright Runner** | ✅ Active | Chromium automation (`navigate`, `fill`, `click`, `select`, `wait`, `assert`). |
-| **Visual Evidence Capture** | ✅ Active | Full WebM video recording and step-by-step PNG screenshots per run. |
-| **Strict Assertion Compiler** | ✅ Active | Fail-closed validation for URL, heading, text, and element visibility. |
-| **Tamper-Evident Approval Gate** | ✅ Active | Canonical SHA-256 hash enforcement; any content drift aborts execution. |
-| **Private DOCX Report Generator** | ✅ Active | Compiles reports with embedded private screenshots and clickable video links. |
-| **Google Drive & Docs Publisher** | ✅ Active | Uploads video and converts DOCX into native Google Docs in dedicated run folders. |
-| **Multi-Project Declarative Config** | ✅ Active | Isolated project profiles via `saqa.json` with dedicated environments and outputs. |
-| **Pi Coding Agent Skill & Slash Command** | ✅ Active | Portable `SKILL.md` and native `/saqa config` prompt template for Pi. |
-| **Jira Webhook Trigger & Comments** | ⏳ Roadmap | Ingestion adapter for Jira boards and automatic ticket comment feedback. |
-| **Google Docs Input Watcher** | ⏳ Roadmap | Reading test scenarios directly from external Google Docs files. |
-| **Hermes Agent Runtime Verification** | ⏳ Roadmap | Skill directory linked; live Hermes binary execution pending local runtime setup. |
+- **Active & Tested**:
+  - Deterministic Playwright execution from Markdown files (`test-cases/*.md`).
+  - Strict generic assertions (`url contains`, `heading contains`, `text contains`, `element is visible`).
+  - Local evidence generation (`artifacts/<RUN_ID>/` with video, screenshots, metadata, and DOCX).
+  - Google Drive & Google Docs native publishing with embedded screenshots and clickable video links.
+  - Multi-project configuration via `saqa.json` with isolated environments and outputs.
+  - Pi Coding Agent skill (`.agents/skills/saqa/SKILL.md`) and prompt template (`/saqa [config|run|approve|list]`).
+- **Roadmap / Not Yet Implemented**:
+  - Jira webhook trigger and automatic issue comment feedback.
+  - Google Docs external file watcher.
+  - Autonomous AI execution mode (`Execution Mode: ai` is currently rejected fail-closed).
+  - Hermes runtime binary verification (skill directory linked; binary not yet installed on this server).
 
 ---
 
 ## Prerequisites
 
-- **Python**: Version 3.10 or higher.
-- **Node.js**: (Optional, if using Pi Coding Agent harness).
-- **Google Workspace Shared Drive**: Required **only** if enabling Google Drive / Google Docs publishing (Google Service Accounts have 0-byte quotas on personal My Drive and require a Shared Drive).
+- **Python**: 3.10 or higher.
+- **Operating System**: Linux (Ubuntu/Debian tested) or macOS.
+- **Google Workspace Shared Drive**: Required **only** if enabling Google Drive / Docs export. *(Google Service Accounts have a 0-byte quota on personal My Drive and require a Shared Drive to own files).*
 
 ---
 
-## Step 1: Install the Core Engine
+## Installation
 
-Clone the SAQA repository to your local machine or server:
+### 1. Clone & Set Engine Root
+
+Clone the repository and set `SAQA_ROOT`:
 
 ```bash
 git clone https://github.com/rizkitriandani/saqa.git /path/to/saqa
 cd /path/to/saqa
+export SAQA_ROOT="$(pwd)"
 ```
+*(Add `export SAQA_ROOT=/path/to/saqa` to your `~/.bashrc` or `~/.zshrc` profile).*
 
-Set the `SAQA_ROOT` environment variable in your shell profile (e.g., `~/.bashrc` or `~/.zshrc`):
+### 2. Python Virtual Environment
+
+Create and activate a virtual environment, then install runtime dependencies:
 
 ```bash
-export SAQA_ROOT=/path/to/saqa
-```
+python3 -m venv .venv
+source .venv/bin/activate
 
-Create and activate a virtual environment, then install the required Python dependencies:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-
-# Install core runtime dependencies
+# Install required packages
 pip install playwright python-docx google-api-python-client google-auth
 
-# Install Playwright browser binaries
-playwright install chromium
+# Install Playwright browser and Linux system dependencies
+python3 -m playwright install --with-deps chromium
 ```
 
-Verify the installation by running the offline test suite:
+Verify your installation by running the test suite:
 
 ```bash
 python3 -m unittest discover tests
 ```
-*(All tests should complete with `OK`).*
 
 ---
 
-## Step 2: Install the Skill in Pi Coding Agent
+## Install Skill in Pi Coding Agent
 
-SAQA implements the [Agent Skills Specification](https://agentskills.io/specification). To enable the AI skill and the `/saqa` slash command in Pi:
-
-1. **Install the Skill**:
-   Symlink or copy the skill folder to your user-level skills directory:
+1. **Register the Skill**:
    ```bash
    mkdir -p ~/.agents/skills
    ln -s "$SAQA_ROOT/.agents/skills/saqa" ~/.agents/skills/saqa
    ```
 
-2. **Install the Slash Command Template**:
-   Symlink the prompt template to enable `/saqa` commands:
+2. **Register the Slash Command (`/saqa`)**:
    ```bash
    mkdir -p ~/.pi/agent/prompts
    ln -s "$SAQA_ROOT/prompts/saqa.md" ~/.pi/agent/prompts/saqa.md
    ```
 
-3. **Reload Pi**:
-   In your active Pi session, run:
+3. **Activate in Pi**:
+   Launch Pi from the shell where `.venv` is active, then reload prompts:
    ```text
    /reload
    ```
 
 ---
 
-## Step 3: Configure a Project (`/saqa config`)
+## Configuring a Project
 
-SAQA allows configuring multiple projects independently. Each project stores its non-secret settings in `saqa.json` at its project root.
+Each target project has its own `saqa.json` and `.env` at its project root.
 
-### Option A: Using the Pi Slash Command
-Inside your project directory in Pi, type:
+### Via Pi Slash Command (`/saqa config`)
+In your project directory, run:
 ```text
 /saqa config
 ```
-Pi will guide you through:
-1. Confirming the project ID / slug.
-2. Setting the target Dev Base URL (e.g., `https://dev.example.com`).
-3. Choosing whether to enable Google Drive reporting.
-4. Reviewing the configuration preview before saving.
+Follow the interactive prompts to define your project slug, base URL, and whether to enable Google Drive exports.
 
-### Option B: Using the CLI
-Navigate to your project root and run:
+### Via CLI
+Run from your target project directory:
 ```bash
-python3 "$SAQA_ROOT/cli.py" config --project-root . --project-id my-project --base-url "https://dev.example.com"
+python3 "$SAQA_ROOT/cli.py" config --project-root . --project-id my-project --base-url "https://dev.example.com" [--gdrive]
 ```
 
 This creates:
-- `saqa.json`: The declarative configuration file.
-- `.env.example`: Template listing the required environment variables.
+- `saqa.json`: Non-secret project configuration.
+- `.env.example`: Template of required environment variables.
 
 ---
 
-## Step 4: Environment & Secrets Setup
+## Environment & Credentials Setup
 
 In your project directory, copy `.env.example` to `.env`:
 
 ```bash
-cp .env.example .env
+cp -i .env.example .env
 chmod 600 .env
 ```
 
-Populate the required secrets:
+Fill in your test credentials:
 
 ```bash
 DEV_BASE_URL=https://dev.example.com
-QA_USERNAME=test_superuser
-QA_PASSWORD=your_secure_password_here
+QA_USERNAME=test_user
+QA_PASSWORD=your_password_here
 
-# Required only if Google Drive output is enabled:
-GOOGLE_DRIVE_FOLDER_ID=your_shared_drive_folder_id_here
+# Required only if --gdrive was enabled during config:
+GOOGLE_DRIVE_FOLDER_ID=your_shared_drive_folder_id
 GOOGLE_APPLICATION_CREDENTIALS=credentials/service-account.json
 ```
 
-> **Security Rules**:
-> - **Never** commit `.env` or `credentials/*.json` to version control. Add them to your project's `.gitignore`.
-> - SAQA limits password substitution strictly to `fill` actions; passwords are prohibited in navigation URLs or plain text.
+If using Google Drive:
+```bash
+mkdir -p credentials
+chmod 700 credentials
+# Place your service-account.json inside credentials/
+chmod 600 credentials/service-account.json
+```
 
 ---
 
-## Step 5: Day-to-Day QA Workflow
+## Day-to-Day QA Workflow
 
 ### 1. Authoring a Test Case
-You can ask Pi in natural language:
-> *"Use saqa to create a test case for verifying our patient registration form on staging."*
+Ask your AI agent in natural language:
+> *"Use saqa to create a test case for verifying login on dev."*
 
-The agent generates a draft test case in `test-cases/TC-002-registration.md` with:
+The agent writes a draft to `test-cases/TC-xxx.md` with:
 ```markdown
 - **Execution Mode**: deterministic
 - **Approval Status**: pending
 ```
+*(See `docs/test-case-contract.md` for format specifications).*
 
 ### 2. Review & Approval Gate
-Before execution, inspect the draft. When satisfied, approve it to compute its SHA-256 canonical hash:
-```bash
-python3 "$SAQA_ROOT/cli.py" approve test-cases/TC-002-registration.md
-```
-*(If anyone edits the steps or assertions after approval, the hash will mismatch and the runner will abort execution with `BLOCKED`).*
+Review the generated steps. When ready, approve the test case to calculate its SHA-256 canonical hash:
 
-### 3. Local Verification (`--no-publish`)
-Execute the test case locally without uploading artifacts:
 ```bash
-python3 "$SAQA_ROOT/cli.py" run test-cases/TC-002-registration.md --no-publish
+python3 "$SAQA_ROOT/cli.py" approve test-cases/TC-xxx.md --project-root .
 ```
 
-Inspect local evidence in `artifacts/<RUN_ID>/`:
+### 3. Execution & Local Verification
+Run the test locally without publishing:
+
+```bash
+python3 "$SAQA_ROOT/cli.py" run test-cases/TC-xxx.md --no-publish --project-root .
+```
+
+Inspect local artifacts under `artifacts/<RUN_ID>/`:
 - `evidence.webm`: Full video recording.
 - `report.docx`: Formatted report with embedded screenshots.
-- `metadata.json`: Execution timestamps, steps, and verdict.
+- `metadata.json`: Step logs, timestamps, and verdict.
 
 ### 4. Publish to Google Drive & Docs
-Once evidence is verified:
+When ready to share:
+
 ```bash
-python3 "$SAQA_ROOT/cli.py" publish <RUN_ID>
+python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> --project-root .
 ```
-The publisher will:
-1. Create a dedicated run subfolder in your Shared Drive (`TC-002_RUN_<timestamp>_<uuid>`).
-2. Upload the WebM video.
-3. Upload the DOCX report and convert it to a native Google Doc with a direct clickable video link.
 
 ---
 
-## CLI Reference Summary
+## CLI Reference
 
 ```bash
-# Initialize / configure a project
-python3 "$SAQA_ROOT/cli.py" config [--project-root <path>]
+# Configure project profile
+python3 "$SAQA_ROOT/cli.py" config [--project-root <path>] [--project-id <id>] [--base-url <url>] [--gdrive] [--overwrite]
 
-# Approve a test case (calculates canonical SHA-256 hash)
-python3 "$SAQA_ROOT/cli.py" approve <path_to_test_case.md> [--project-root <path>]
+# Approve a test case (calculates SHA-256 canonical hash)
+python3 "$SAQA_ROOT/cli.py" approve <path> [--project-root <path>]
 
-# Run a test case (deterministic execution)
-python3 "$SAQA_ROOT/cli.py" run <path_to_test_case.md> [--no-publish] [--project-root <path>]
+# Run a test case
+python3 "$SAQA_ROOT/cli.py" run <path> [--no-publish] [--project-root <path>]
 
-# Publish local artifacts to Google Drive
+# Publish local run artifacts to Google Drive
 python3 "$SAQA_ROOT/cli.py" publish <RUN_ID> [--force] [--project-root <path>]
 
 # List execution history for the project
@@ -225,17 +212,8 @@ python3 "$SAQA_ROOT/cli.py" list [--project-root <path>]
 
 ---
 
-## Google Drive Setup Notes
+## Known Limitations
 
-If using Google Drive output:
-1. Enable the **Google Drive API** in your Google Cloud Project.
-2. Create a **Service Account** and download its JSON private key to `credentials/service-account.json`.
-3. Open your organization's **Shared Drive** in Google Drive.
-4. Add the Service Account email as a member with the **Contributor** or **Content Manager** role.
-5. Set `GOOGLE_DRIVE_FOLDER_ID` in your `.env` to the ID of the folder inside that Shared Drive.
-
----
-
-## License
-
-MIT
+- **Local Hash Scope**: The SHA-256 approval hash detects unintended local edits to steps and assertions. It does not authenticate reviewer identities or provide multi-user cryptographic signatures.
+- **Cross-Origin Navigation**: Preflight validation blocks navigation outside configured origins; runtime redirect defense across third-party domains is subject to ongoing hardening.
+- **Sensitive Data**: Password substitution is restricted to `fill` action values, but test scenarios should always run against synthetic test accounts in staging environments.
