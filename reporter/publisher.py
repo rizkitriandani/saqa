@@ -60,10 +60,13 @@ def publish_artifacts(run_id: str, force: bool = False, project_root: Path = Non
     docx_path = run_dir / "report.docx"
     video_path = run_dir / "evidence.webm"
 
-    cred_path_str = env_vars.get(cred_var, os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials/service-account.json"))
-    cred_path = project_root / cred_path_str if not os.path.isabs(cred_path_str) else Path(cred_path_str)
+    cred_path_str = env_vars.get(cred_var, "").strip()
+    if not cred_path_str:
+        cred_path = Path("nonexistent_credential")
+    else:
+        cred_path = project_root / cred_path_str if not os.path.isabs(cred_path_str) else Path(cred_path_str)
 
-    parent_folder_id = env_vars.get(folder_var, os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
+    parent_folder_id = env_vars.get(folder_var, "").strip()
 
     if not parent_folder_id or not cred_path.exists():
         status_info = {
@@ -71,7 +74,8 @@ def publish_artifacts(run_id: str, force: bool = False, project_root: Path = Non
             "status": "UNPUBLISHED",
             "reason": "AWAITING_GOOGLE_DRIVE_CREDENTIALS",
             "message": (
-                f"File kredensial Google Service Account ({cred_path}) atau {folder_var} belum disetel di .env.\n"
+                f"File kredensial Google Service Account ({cred_path_str or 'belum disetel'}) atau "
+                f"folder {folder_var} belum disetel di environment proyek {project_root.name}.\n"
                 f"Laporan lokal aman tersimpan di: {docx_path.relative_to(project_root) if docx_path.exists() else 'Belum dibuat'}\n"
                 f"Video rekaman tersimpan di: {video_path.relative_to(project_root) if video_path.exists() else 'None'}"
             ),

@@ -100,7 +100,7 @@ def load_project_config(project_root: Path) -> Dict[str, Any]:
             raise ValueError(f"Validasi saqa.json gagal: {'; '.join(errors)}")
         return cfg
 
-    # Fallback konfigurasi default jika saqa.json belum dibuat
+    # Fallback konfigurasi default jika saqa.json belum dibuat (Hanya lokal, tidak otomatis upload)
     env_vars = load_project_env(project_root)
     base_url = env_vars.get("DEV_BASE_URL", "")
     p = urlparse(base_url) if base_url else None
@@ -121,12 +121,7 @@ def load_project_config(project_root: Path) -> Dict[str, Any]:
             "test_cases_dir": "test-cases"
         },
         "outputs": [
-            {"type": "local"},
-            {
-                "type": "google_drive",
-                "folder_id_env": "GOOGLE_DRIVE_FOLDER_ID",
-                "credentials_env": "GOOGLE_APPLICATION_CREDENTIALS"
-            }
+            {"type": "local"}
         ]
     }
 
