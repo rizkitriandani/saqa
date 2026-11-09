@@ -290,5 +290,41 @@ class TestClarificationLoop(unittest.TestCase):
         self.assertIn("Salin / tempel teks skenario baru", msg)
         self.assertIn("Lampirkan berkas", msg)
 
+    def test_evaluate_ticket_readiness_jira_wiki_markup_and_table(self):
+        # Menguji format Atlassian Wiki Markup yang dikembalikan Jira Cloud REST API v2
+        wiki_desc = (
+            "h2. Test Data\n"
+            "* username: ${QA_USERNAME}\n"
+            "* password: ${QA_PASSWORD}\n\n"
+            "h2. Test Steps\n"
+            "||Step||Action||Target Element / Label||Input Value||Expected Step Outcome||\n"
+            "|1|navigate|${DEV_BASE_URL}|-|Halaman login BCA Life berhasil termuat|\n"
+            "|2|fill|Username or Email|${QA_USERNAME}|Kolom username terisi|\n"
+            "|3|fill|Password|${QA_PASSWORD}|Kolom password terisi (karakter terlindungi)|\n"
+            "|4|click|Sign In|•|Permintaan login diproses|\n\n"
+            "h2. Expected Results\n"
+            "* url does not contain \"/login\"\n"
+            "* heading contains \"Dashboard\"\n"
+            "* text contains \"Super User\"\n"
+            "* text contains \"Care Monitor\"\n"
+            "* text contains \"Total Member\"\n"
+            "* text contains \"Total Claim\"\n"
+        )
+        res = evaluate_ticket_readiness(
+            wiki_desc,
+            self.proj_dir,
+            issue_key="TRACKING-130",
+            ticket_summary="TC-001 LOGIN"
+        )
+        self.assertEqual(res["reason_code"], ReasonCode.INLINE_TEST_CASE_DETECTED)
+        self.assertEqual(res["action_required"], ActionRequired.WAIT_APPROVAL)
+        self.assertEqual(res["candidate_source_type"], "inline_markdown")
+        self.assertIsNotNone(res["candidate_summary"])
+        self.assertEqual(res["candidate_summary"]["id"], "TC-001")
+        self.assertEqual(res["candidate_summary"]["title"], "TC-001 LOGIN")
+        self.assertEqual(res["candidate_summary"]["steps_count"], 4)
+        self.assertEqual(len(res["candidate_summary"]["expected_results"]), 6)
+        self.assertEqual(res["candidate_summary"]["target_url"], "${DEV_BASE_URL}")
+
 if __name__ == "__main__":
     unittest.main()

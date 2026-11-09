@@ -115,45 +115,59 @@ def parse_markdown_test_case_content(content: str) -> Dict[str, Any]:
     current_sec = None
     for line in content.splitlines():
         line_s = line.strip()
-        if line_s.startswith("## "):
-            sec_name = line_s.strip("# ").lower()
-            if "precondition" in sec_name:
+        if not line_s:
+            continue
+
+        if "|" not in line_s:
+            clean_header = re.sub(r'^(?:#{1,6}|h[1-6]\.|\*{1,2})\s*|\s*(?:\*{1,2}|:)$', '', line_s).strip().lower()
+            if clean_header in ["preconditions", "precondition", "pra-kondisi", "prakondisi"]:
                 current_sec = "preconditions"
-            elif "test data" in sec_name or "data uji" in sec_name:
+                continue
+            elif clean_header in ["test data", "data uji"]:
                 current_sec = "test_data"
-            elif "step" in sec_name or "langkah" in sec_name:
+                continue
+            elif clean_header in ["test steps", "test step", "steps", "langkah", "langkah pengujian"]:
                 current_sec = "steps"
-            elif "expected result" in sec_name or "hasil yang diharapkan" in sec_name:
+                continue
+            elif clean_header in ["expected results", "expected result", "hasil yang diharapkan", "hasil"]:
                 current_sec = "expected_results"
-            else:
-                current_sec = None
+                continue
+
+        if not current_sec:
             continue
 
-        if not current_sec or not line_s:
-            continue
-
-        if current_sec == "preconditions" and line_s.startswith("-"):
-            parsed["preconditions"].append(line_s.strip("- *"))
-        elif current_sec == "test_data" and (line_s.startswith("-") or ":" in line_s):
-            clean_l = line_s.strip("- *")
+        if current_sec == "preconditions":
+            item = re.sub(r'^[-*•]\s*|^\d+[\.\)]\s*', '', line_s).strip()
+            if item:
+                parsed["preconditions"].append(item)
+        elif current_sec == "test_data":
+            clean_l = re.sub(r'^[-*•]\s*|^\d+[\.\)]\s*', '', line_s).strip()
             if ":" in clean_l:
                 k, v = clean_l.split(":", 1)
                 parsed["test_data"][k.strip()] = v.strip()
-        elif current_sec == "expected_results" and line_s.startswith("-"):
-            parsed["expected_results"].append(line_s.strip("- *"))
+        elif current_sec == "expected_results":
+            item = re.sub(r'^[-*•]\s*|^\d+[\.\)]\s*', '', line_s).strip()
+            if item:
+                parsed["expected_results"].append(item)
         elif current_sec == "steps" and "|" in line_s:
-            cols = [c.strip() for c in line_s.split("|")[1:-1]]
+            norm_line = line_s.replace("||", "|")
+            cols = [c.strip() for c in norm_line.split("|")[1:-1]]
             if len(cols) >= 4 and cols[0].lower() not in ["step", ":---", "---"]:
                 step_num = cols[0]
                 action = cols[1].lower()
                 target = cols[2]
                 val = cols[3] if len(cols) > 3 else "-"
                 outcome = cols[4] if len(cols) > 4 else ""
+
+                val_clean = re.sub(r'^[•\s-]+$', '-', val).strip()
+                if not val_clean:
+                    val_clean = "-"
+
                 parsed["steps"].append({
                     "step_number": step_num,
                     "action": action,
                     "target": target,
-                    "value": val,
+                    "value": val_clean,
                     "expected_step_outcome": outcome
                 })
 

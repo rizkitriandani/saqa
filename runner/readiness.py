@@ -45,10 +45,10 @@ def is_scenario_like_text(text: str) -> bool:
     return len(matches) >= 2
 
 def is_full_inline_test_case(desc_text: str) -> bool:
-    """Mengecek apakah teks deskripsi memuat spesifikasi kasus uji Markdown lengkap."""
+    """Mengecek apakah teks deskripsi memuat spesifikasi kasus uji Markdown atau Jira wiki lengkap."""
     has_id = bool(re.search(r'(?:^|\n)\s*(?:#\s*TC-\d+|\*\*\s*ID\s*\*\*\s*:\s*TC-\d+)', desc_text, re.IGNORECASE))
-    has_steps = bool(re.search(r'Test\s+Steps|Langkah\s+Pengujian', desc_text, re.IGNORECASE))
-    has_expected = bool(re.search(r'Expected\s+Results|Hasil\s+yang\s+Diharapkan', desc_text, re.IGNORECASE))
+    has_steps = bool(re.search(r'(?:#{1,6}|h[1-6]\.|\*{1,2})?\s*(?:Test\s+Steps|Langkah\s+Pengujian)', desc_text, re.IGNORECASE))
+    has_expected = bool(re.search(r'(?:#{1,6}|h[1-6]\.|\*{1,2})?\s*(?:Expected\s+Results|Hasil\s+yang\s+Diharapkan)', desc_text, re.IGNORECASE))
     return (has_id or has_steps) and has_expected
 
 def evaluate_ticket_readiness(
@@ -111,6 +111,11 @@ def evaluate_ticket_readiness(
                 parsed["title"] = ticket_summary
             elif issue_key:
                 parsed["title"] = f"Test Scenario for {issue_key}"
+
+        if not parsed.get("target_url") and parsed.get("steps"):
+            first_step = parsed["steps"][0]
+            if first_step.get("action") == "navigate":
+                parsed["target_url"] = first_step.get("target", "")
 
         c_errors = validate_test_case_contract(parsed)
         tc_id = parsed.get("id") or (issue_key or "INLINE")
